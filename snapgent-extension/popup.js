@@ -105,9 +105,10 @@ function render(s) {
   setHidden("rotate-token", !(s.connected && s.savedToken));
   const ver = document.getElementById("ver");
   const extVer = chrome.runtime.getManifest().version;
-  ver.textContent = !s.connected ? `v${extVer}`
-    : s.bridgeVersion ? `v${extVer} · bridge ${s.bridgeVersion}`
-    : `v${extVer}`;
+  // One version normally. The bridge is only named when it differs from the
+  // extension, because that mismatch is the only time the number matters.
+  const bridgeMismatch = s.connected && s.bridgeVersion && s.bridgeVersion !== extVer;
+  ver.textContent = bridgeMismatch ? `v${extVer} · bridge ${s.bridgeVersion}` : `v${extVer}`;
   tools.textContent = s.connected
     ? `${s.tools || 0} tools`
       + (s.bridgeStatus && s.bridgeStatus.uptime_seconds != null
@@ -117,6 +118,7 @@ function render(s) {
     : s.rotatingToken ? "New token saved"
     : `Run ${LAUNCHER}`;
   servers.textContent = s.connected ? serverLines(s, list).join("\n") : "";
+  servers.title = "MCP servers: state dot, name, tool count, memory";
   renderUsage(s.usage);
 }
 
@@ -129,6 +131,13 @@ function renderUsage(u) {
   if (!node) return;
   node.textContent = "";
   if (!u || !u.provider) return;
+  // A labelled line, so "deepseek · ~1 tok · 31s" reads as history rather than
+  // as five unlabelled numbers.
+  const label = document.createElement("span");
+  label.className = "u-label";
+  label.textContent = "Last task";
+  node.appendChild(label);
+  node.appendChild(document.createTextNode(" "));
   const parts = [];
   const model = document.createElement("span");
   model.className = "u-model";
@@ -215,20 +224,35 @@ onClick("forget-token", () => {
     chrome.runtime.sendMessage({ type: "reconnect" }, () => setTimeout(refresh, 800));
   });
 });
-document.getElementById("settings").addEventListener("click", () => {
-  // Tries the in-page panel on an already-open supported AI tab first, so
-  // opening it doesn't require a conversation to already be started there.
+// Settings live in the in-page panel, so it needs a supported AI tab. Never
+// make the user open one first: reuse an open tab if there is one, otherwise
+// open one and wait for its content script before asking for the panel.
+const openSettings = () => {
   chrome.tabs.query({}, (tabs) => {
-    const active = tabs.find((t) => t.active && t.url && SUPPORTED_HOSTS.some((h) => t.url.includes(h)));
-    const anySupported = active || tabs.find((t) => t.url && SUPPORTED_HOSTS.some((h) => t.url.includes(h)));
-    if (anySupported) {
-      chrome.tabs.sendMessage(anySupported.id, { type: "zs-open-menu" });
-      chrome.tabs.update(anySupported.id, { active: true });
-    } else {
-      chrome.tabs.create({ url: DEFAULT_AI_URL });
+    const supported = (tabs || []).filter(
+      (t) => t.url && SUPPORTED_HOSTS.some((h) => t.url.includes(h))
+    );
+    const target = supported.find((t) => t.active) || supported[0];
+    if (target) {
+      chrome.tabs.update(target.id, { active: true });
+      chrome.tabs.sendMessage(target.id, { type: "zs-open-menu" });
+      return;
     }
+    chrome.tabs.create({ url: DEFAULT_AI_URL }, (tab) => {
+      if (!tab || typeof chrome.tabs.onUpdated?.addListener !== "function") return;
+      const onUpdated = (id, info) => {
+        if (id !== tab.id || info.status !== "complete") return;
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        // The content script mounts the bar right after load, so give it a beat
+        // before asking it to open the panel (a lost message is silent).
+        setTimeout(() => chrome.tabs.sendMessage(tab.id, { type: "zs-open-menu" }), 1200);
+      };
+      chrome.tabs.onUpdated.addListener(onUpdated);
+    });
   });
-});
+};
+const settingsButton = document.getElementById("settings");
+if (settingsButton) settingsButton.addEventListener("click", openSettings);
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === "zs-status") render(msg);

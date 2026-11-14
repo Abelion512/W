@@ -71,16 +71,6 @@
       letter-spacing: 0;
       color: var(--muted-2);
     }
-    .badge {
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.3px;
-      padding: 3px 8px;
-      border-radius: 999px;
-      color: var(--accent);
-      background: rgba(124, 140, 255, 0.14);
-    }
-
     /* Surfaces */
     .card {
       background: var(--surface);
@@ -150,6 +140,14 @@
       overflow-wrap: anywhere;
     }
     #usage:empty { display: none; }
+    #usage .u-label {
+      margin-right: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      color: var(--muted-2);
+    }
     #usage .u-model { color: var(--text); font-weight: 600; }
     #usage .u-bad { color: var(--bad); }
 
@@ -244,7 +242,6 @@
   <div class="wrap">
     <header>
       <h1>snapgent <span class="ver" id="ver"></span></h1>
-      <span class="badge">V3</span>
     </header>
 
     <section class="card">
@@ -268,8 +265,8 @@
     </section>
 
     <div class="actions">
-      <button id="reconnect">↻ Reconnect</button>
-      <button id="restart">⟳ Restart</button>
+      <button id="reconnect" title="Redial the bridge (does not restart it)">↻ Reconnect</button>
+      <button id="restart" title="Restart the MCP servers only - the bridge keeps running">⟳ Restart</button>
       <button id="settings">⚙ Settings</button>
       <button class="full" id="rotate-token" hidden>🔑 Rotate token</button>
       <button class="full" id="forget-token" hidden>🗝 Forget saved token</button>
