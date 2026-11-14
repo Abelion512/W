@@ -14,8 +14,8 @@ class A2AServerTests(unittest.TestCase):
         self.submit_delay = 0.0
         self.submit_result = {"ok": True, "text": "the reply"}
 
-        def submit(prompt, timeout):
-            self.submit_calls.append((prompt, timeout))
+        def submit(prompt, timeout, metadata=None):
+            self.submit_calls.append((prompt, timeout, metadata))
             if self.submit_delay:
                 time.sleep(self.submit_delay)
             return self.submit_result
@@ -94,6 +94,17 @@ class A2AServerTests(unittest.TestCase):
         self.assertEqual(task["artifacts"][0]["parts"][0]["text"], "the reply")
         self.assertEqual(task["artifacts"][0]["name"], "reply")
         self.assertEqual(self.submit_calls[0][0], "ping")
+
+    def test_send_message_passes_metadata_to_submit(self):
+        metadata = {"taskCategory": "debug", "modelTier": "balanced"}
+        response = self.rpc(
+            "SendMessage", {"message": self.message("routed"), "metadata": metadata}
+        )
+        task = response["result"]
+        self.assertEqual(task["status"]["state"], "TASK_STATE_COMPLETED")
+        self.assertEqual(task["metadata"], metadata)
+        self.assertEqual(self.submit_calls[-1][0], "routed")
+        self.assertEqual(self.submit_calls[-1][2], metadata)
 
     def test_send_message_failure_sets_failed(self):
         self.submit_result = {"ok": False, "error": "extension not connected"}

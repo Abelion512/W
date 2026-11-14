@@ -2,7 +2,9 @@
 """A2A 1.0 HTTP facade over the Snapgent browser bridge.
 
 The server never touches the browser. It calls an injected ``submit(prompt,
-timeout)`` callable that blocks until the bridge reports the reply. See
+timeout, metadata)`` callable that blocks until the bridge reports the reply.
+The A2A request's ``metadata`` is passed through unchanged so the bridge and
+extension can route the task (for example, model tier by task category). See
 ``docs/a2a-design.md`` for the architecture.
 
 stdlib only.
@@ -235,14 +237,16 @@ class A2AServer:
             # Snapshot before the worker can flip the task to WORKING/COMPLETED.
             view = self._view(self.store.get(task["id"]), history_length)
             threading.Thread(
-                target=self._run_submit, args=(task["id"], text), daemon=True
+                target=self._run_submit,
+                args=(task["id"], text, task.get("metadata")),
+                daemon=True,
             ).start()
             return self._result(rpc_id, view)
 
         self.store.update(
             task["id"], status={"state": "TASK_STATE_WORKING", "timestamp": _now_iso()}
         )
-        self._run_submit(task["id"], text)
+        self._run_submit(task["id"], text, task.get("metadata"))
         return self._result(rpc_id, self._view(self.store.get(task["id"]), history_length))
 
     def _get_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -274,7 +278,7 @@ class A2AServer:
         handler.start_sse()
         handler.send_sse({"task": self._view(task, None)})
 
-        result = self._call_submit(text)
+        result = self._call_submit(text, task.get("metadata"))
         if result.get("ok"):
             text_out = str(result.get("text") or "")
             artifact = self._artifact(text_out)
@@ -348,17 +352,19 @@ class A2AServer:
             "contextId": task.get("contextId", ""),
         }
 
-    def _call_submit(self, text: str) -> Dict[str, Any]:
+    def _call_submit(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         try:
-            result = self.submit(text, self.timeout_ms / 1000.0)
+            result = self.submit(text, self.timeout_ms / 1000.0, metadata or {})
         except Exception as error:  # noqa: BLE001 - report any submit failure
             return {"ok": False, "error": str(error)}
         if not isinstance(result, dict):
             return {"ok": False, "error": "submit returned an invalid result"}
         return result
 
-    def _run_submit(self, task_id: str, text: str) -> None:
-        result = self._call_submit(text)
+    def _run_submit(
+        self, task_id: str, text: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        result = self._call_submit(text, metadata)
         if result.get("ok"):
             self._complete(task_id, str(result.get("text") or ""))
         else:
