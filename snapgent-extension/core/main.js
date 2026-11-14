@@ -4689,6 +4689,52 @@
   // The bridge now sends zs-a2a-abort on timeout; the hard cap below is the
   // safety net for when even that message cannot arrive (extension reloaded,
   // socket gone). Both routes stop the native generation and let the loop end.
+  // A delegation must never hijack a thread a human is typing in, so it starts
+  // from an empty chat. Most providers restore the last conversation on load
+  // (measured live: qwen and rudder both come back on an old thread), so the
+  // "open a new chat" click has to be done for the caller instead of failing
+  // with "Use an empty chat" and leaving the A2A client to guess why.
+  const NEW_CHAT_LABEL = /^(new chat|new conversation|new thread|chat baru|nouveau chat|nuevo chat)$/i;
+  function findNewChatControl() {
+    const candidates = [...document.querySelectorAll('button, a, [role="button"]')];
+    return candidates.find((el) => {
+      if (el.closest("#zs-root")) return false;
+      if (!el.getClientRects().length) return false;
+      const label = (el.innerText || el.getAttribute("aria-label") || "")
+        .trim().replace(/\s+/g, " ");
+      return NEW_CHAT_LABEL.test(label);
+    }) || null;
+  }
+  // Some sites put their reasoning UI INSIDE the answer turn, and the readable
+  // text then starts with its status line (measured live: Kimi -> "Thinking
+  // process      PONG", Mistral -> "Thought for 1s"). Strip those leading status
+  // lines and nothing else - the answer itself is left byte-for-byte intact.
+  const REASONING_HEAD = /^(thinking (process|complete)|thought for \d+(?:\.\d+)?\s*s(?:ec(?:onds?)?)?|reasoning)\s*[:.\-]?\s*/i;
+  function cleanA2AText(raw) {
+    // Trim first: the status line can sit after leading whitespace, and `^` then
+    // would never match it (measured live: Kimi returned "\nThinking process …").
+    let text = String(raw || "").trim();
+    let previous;
+    do {
+      previous = text;
+      text = text.replace(REASONING_HEAD, "").trim();
+    } while (text !== previous);
+    return text;
+  }
+
+  async function openFreshChat() {
+    if (P.chatIsEmpty()) return true;
+    const control = findNewChatControl();
+    if (!control) return false;
+    control.click();
+    const started = Date.now();
+    while (Date.now() - started < 12000) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (P.chatIsEmpty() && (!P.getEditor || P.getEditor())) return true;
+    }
+    return P.chatIsEmpty();
+  }
+
   const A2A_HARD_CAP_MS = 15 * 60 * 1000;
   let a2aAborted = false;
   let a2aCurrentId = null;
@@ -4713,6 +4759,12 @@
       const cap = setTimeout(() => abortA2A("hard-cap"), A2A_HARD_CAP_MS);
       try {
         if (!A.started) {
+          if (!(await openFreshChat())) {
+            throw new Error(
+              "Could not start a Snapgent session: this chat already has messages " +
+              "and no new-chat button was found. Open a new chat and retry."
+            );
+          }
           await startSession();
           if (!A.started) throw new Error("Could not start a Snapgent session in this chat.");
         }
@@ -4726,7 +4778,7 @@
         return;
       }
       const item = P.lastAssistant();
-      const text = item ? P.itemText(item) : "";
+      const text = cleanA2AText(item ? P.itemText(item) : "");
       // An empty final turn is a FAILED delegation, not a successful one with a
       // blank artifact: the A2A client must be able to tell the difference.
       if (!text) {

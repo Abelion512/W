@@ -221,8 +221,25 @@ from request to reply.
 | meta | blocked | - | session bootstrap does not find a ready composer on the fresh page |
 | kimi | blocked | - | bootstrap times out; the tab reports no ready composer |
 
-Seven of twelve text providers answer end to end. The five blocked ones fail
-BEFORE a prompt is sent (no empty chat, or no composer found), so they are
-provider-adapter work, not routing or bridge problems. The harness reports the
-failure honestly ("Could not start a Snapgent session in this chat") instead of
-timing out silently.
+Follow-up round (same day, patient runs of 240 s, after the fresh-chat and
+composer fixes):
+
+| Provider | Result | Note |
+| --- | --- | --- |
+| deepseek | ok | stable across runs |
+| gemini | ok | stable across runs |
+| qwen | ok | fixed: the harness now opens a new chat itself |
+| rudder | ok | fixed: same |
+| kimi | ok | fixed: text is `PONG` now (reasoning header stripped), composer is `/chat` |
+| meta | ok | fixed: text is typed into the visible Lexical editor; the hidden mirror textarea no longer drives send state |
+| grok | flaky | composer selector + 15 s wait added; a run right after a page load can still fail the bootstrap ("mode not ready") before it settles |
+| claude | flaky | works on a warm tab; right after a fresh navigate the bootstrap sometimes reports "Could not start a Snapgent session" |
+| glm | flaky | ok on a warm tab, fails on a cold one |
+| arena | flaky | ok on a warm tab, fails on a cold one |
+| chatgpt | ok | pass on a warm tab; a cold navigate can refuse the session |
+| mistral | ok (text) | reply still carries its reasoning text; extraction needs trimming |
+
+The remaining failures are all the same shape: a cold page has no composer yet
+when the bootstrap runs, or the site restored a thread so the chat is not empty.
+None of them is a routing, bridge or cancellation problem, and the harness
+reports them as failures instead of timing out silently.

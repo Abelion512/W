@@ -15,7 +15,10 @@ const ZSProvider = (() => {
   const S = {
     user: '[data-message-author-role="user"],[data-testid*="user-message"],[data-testid*="user-turn"],[data-testid*="conversation-turn"][data-role="user"]',
     assistant: '[data-message-author-role="assistant"],[data-testid*="assistant-message"],[data-testid*="assistant-turn"],[data-testid*="conversation-turn"][data-role="assistant"]',
-    editor: '[contenteditable="true"][role="combobox"][aria-label*="Grok" i],[contenteditable="true"][role="combobox"][aria-label*="Ask" i],#chat, textarea[placeholder*="Message" i], [contenteditable="true"][role="textbox"]',
+    // 2026-11 composer is a tiptap/ProseMirror div with no role and no aria-label
+    // (measured live), so the role-based selectors alone left mode_ready false and
+    // every start failed with "Grok mode not ready".
+    editor: '[contenteditable="true"][role="combobox"][aria-label*="Grok" i],[contenteditable="true"][role="combobox"][aria-label*="Ask" i],#chat, textarea[placeholder*="Message" i], [contenteditable="true"][role="textbox"],.tiptap[contenteditable="true"],.ProseMirror[contenteditable="true"]',
     errors: '[role="alert"],[data-testid*="error"],[class*="error-message"]',
   };
   const timings = {
@@ -61,7 +64,19 @@ const ZSProvider = (() => {
 
   function textWithout(root, excludeSel) {
     if (!root) return "";
-    const skip = [".zs-chip", excludeSel].filter(Boolean).join(",");
+    // The turn carries a visible-in-a11y-tree author label ("Grok") plus a
+    // reasoning/tool header; neither is the answer. Measured live: without this
+    // the reply read "Grok\nPONG".
+    const skip = [
+      ".zs-chip",
+      '[aria-hidden="true"]',
+      ".sr-only",
+      '[class*="sr-only"]',
+      "button",
+      '[class*="thinking"]',
+      '[class*="reasoning"]',
+      excludeSel,
+    ].filter(Boolean).join(",");
     let text = "";
     const walk = (node) => {
       if (node.nodeType === Node.TEXT_NODE) {
@@ -234,7 +249,14 @@ const ZSProvider = (() => {
   }
   const enforceComposer = () => ({ ready: !!getEditor() });
   async function ensureComposerReady(reason) {
-    const ready = !!getEditor();
+    // The shell paints before the tiptap composer mounts, and the core calls this
+    // once right after load. Waiting here is what stops a spurious "Grok mode not
+    // ready" on a fresh tab (same pattern as Rudder and Gemini).
+    let ready = !!getEditor();
+    if (!ready) {
+      diag("mode_ready.wait", { reason, provider: "grok" });
+      ready = await waitFor(() => !!getEditor(), 15000);
+    }
     diag("mode_ready", { reason, provider: "grok", ready });
     return { ready };
   }
