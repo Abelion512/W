@@ -576,6 +576,21 @@ class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(await asyncio.wait_for(task, 2), {"ok": True, "text": "world"})
 
+    async def test_context_only_flag_does_not_leak_after_a_sandbox_failure(self):
+        # The flag tells the next tool call to be rejected while a context-only
+        # prompt is in flight. A prompt that fails BEFORE it is sent must not
+        # leave it set, or the following normal task would lose its tools.
+        manager = bridge.Bridge()
+        client = FakeClient()
+        manager.clients.add(client)
+        with patch.object(bridge, "ROOT", Path(tempfile.gettempdir())):
+            result = await manager.submit_prompt(
+                "hello", 5, {"contextOnly": True, "contextFiles": ["definitely-missing.txt"]}
+            )
+        self.assertFalse(result["ok"])
+        self.assertFalse(manager._context_only)
+        self.assertEqual(client.sent, [])
+
     async def test_submit_prompt_prepends_context_sandbox(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

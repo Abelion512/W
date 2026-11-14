@@ -18,6 +18,7 @@ stdlib only.
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -88,14 +89,19 @@ def run_checks(
     cwd: Optional[str] = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> List[Dict[str, Any]]:
-    """Run acceptance commands locally and return command, exit code and output."""
+    """Run acceptance commands locally and return command, exit code and output.
+
+    Commands are executed WITHOUT a shell: the string is split with
+    ``shlex.split`` and run directly, so a check cannot smuggle a pipe, redirect
+    or ``&&`` chain in by accident. A check that genuinely needs shell syntax
+    should say so explicitly, e.g. ``sh -c 'npm test 2>&1 | tail -20'``.
+    """
     results: List[Dict[str, Any]] = []
     for command in commands:
         started = time.time()
         try:
             completed = subprocess.run(
-                command,
-                shell=True,
+                shlex.split(command),
                 cwd=cwd,
                 capture_output=True,
                 text=True,
@@ -116,6 +122,15 @@ def run_checks(
                     "command": command,
                     "code": 124,
                     "output": f"timed out after {timeout}s",
+                    "seconds": round(time.time() - started, 2),
+                }
+            )
+        except ValueError as error:  # shlex.split: unbalanced quotes
+            results.append(
+                {
+                    "command": command,
+                    "code": 2,
+                    "output": f"cannot parse command: {error}",
                     "seconds": round(time.time() - started, 2),
                 }
             )

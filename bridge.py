@@ -699,7 +699,11 @@ class Bridge:
                     return {"ok": False, "error": "No Snapgent extension is connected."}
             prompt_id = f"p{uuid.uuid4().hex}"
             metadata = metadata if isinstance(metadata, dict) else {}
-            self._context_only = bool(metadata.get("contextOnly"))
+            # Local until the prompt is actually sent: every early return below
+            # (sandbox failure, unreadable files) leaves the bridge without a
+            # pending prompt, so it must not leave the flag set for the NEXT
+            # task either.
+            context_only = bool(metadata.get("contextOnly"))
             requested = metadata.get("contextFiles")
             if isinstance(requested, list) and requested:
                 # Only the named files go to the web chat. The copy is kept on
@@ -737,12 +741,13 @@ class Bridge:
                         "skipped": sandbox["skipped"],
                     },
                 }
-            elif self._context_only:
+            elif context_only:
                 prompt = (
                     "[TOOLS DISABLED] This task is context-only: every tool call is "
                     "rejected.\n\n"
                 ) + prompt
             future: asyncio.Future = loop.create_future()
+            self._context_only = context_only
             self._pending_prompts[prompt_id] = future
             self._prompt_owner = client
             try:

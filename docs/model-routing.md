@@ -73,14 +73,20 @@ stays on whatever model the user selected in that site.
 ## Complexity
 
 The harness may also declare `complexity: low | medium | high`. It maps to
-`light`, `balanced`, `deep` and **overrides** the category default, because a
-one-line rename inside a `code-edit` task does not need a frontier model.
+`light`, `balanced`, `deep`, because a one-line rename inside a `code-edit` task
+does not need a frontier model.
 
 Metadata precedence, highest first:
 
-1. `modelTier` (explicit, wins over everything)
-2. `complexity`
-3. `taskCategory`
+1. `provider` (pin: one site, no fallback chain)
+2. `modelTier` (explicit effort, wins over the guesses below)
+3. `taskCategory` (names an actual provider list, e.g. `realtime` -> Grok)
+4. `complexity` (effort only: picks the tier when no category list applies)
+
+Category outranks complexity on purpose: a category names the sites that can do
+the job, while complexity only says how hard the job is. `realtime` + `high`
+still has to land on Grok - a generic `deep` tier would send it to Claude, which
+cannot see the live page.
 
 ## Where the decision is made
 

@@ -32,6 +32,12 @@ class HarnessLoopTests(unittest.TestCase):
         results = harness_loop.run_checks(["true", "false"])
         self.assertEqual([r["code"] for r in results], [0, 1])
 
+    def test_run_checks_does_not_interpret_shell_metacharacters(self):
+        # No shell: the `;` is an argument, not a command separator.
+        results = harness_loop.run_checks(["printf %s 'one; two'"])
+        self.assertEqual(results[0]["code"], 0)
+        self.assertEqual(results[0]["output"].strip(), "one; two")
+
     def test_loop_retries_with_failure_feedback_until_checks_pass(self):
         verifications = []
 
