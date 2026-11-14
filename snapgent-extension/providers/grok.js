@@ -64,17 +64,16 @@ const ZSProvider = (() => {
 
   function textWithout(root, excludeSel) {
     if (!root) return "";
-    // The turn carries a visible-in-a11y-tree author label ("Grok") plus a
-    // reasoning/tool header; neither is the answer. Measured live: without this
-    // the reply read "Grok\nPONG".
+    // The turn carries a visible-in-a11y-tree author label ("Grok") and action
+    // buttons; neither is the answer. Measured live: without this the reply read
+    // "Grok\nPONG". Deliberately narrow - a class-name guess like
+    // [class*="reasoning"] would also drop answer text on a redesign.
     const skip = [
       ".zs-chip",
       '[aria-hidden="true"]',
       ".sr-only",
       '[class*="sr-only"]',
       "button",
-      '[class*="thinking"]',
-      '[class*="reasoning"]',
       excludeSel,
     ].filter(Boolean).join(",");
     let text = "";

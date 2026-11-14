@@ -4707,9 +4707,10 @@
   }
   // Some sites put their reasoning UI INSIDE the answer turn, and the readable
   // text then starts with its status line (measured live: Kimi -> "Thinking
-  // process      PONG", Mistral -> "Thought for 1s"). Strip those leading status
-  // lines and nothing else - the answer itself is left byte-for-byte intact.
-  const REASONING_HEAD = /^(thinking (process|complete)|thought for \d+(?:\.\d+)?\s*s(?:ec(?:onds?)?)?|reasoning)\s*[:.\-]?\s*/i;
+  // process      PONG"). Strip those leading status lines and nothing else.
+  // "Reasoning:" is NOT included: a model may legitimately open an answer with
+  // it, and dropping a real first line is worse than keeping a UI label.
+  const REASONING_HEAD = /^(thinking (process|complete)|thought for \d+(?:\.\d+)?\s*s(?:ec(?:onds?)?)?)\s*[:.\-]?\s*/i;
   function cleanA2AText(raw) {
     // Trim first: the status line can sit after leading whitespace, and `^` then
     // would never match it (measured live: Kimi returned "\nThinking process …").
@@ -4765,7 +4766,16 @@
               "and no new-chat button was found. Open a new chat and retry."
             );
           }
+          // A cold tab can be one repaint short of ready: the site's shell is up
+          // while its composer still mounts. startSession() bails out silently in
+          // that window, which used to surface as a one-shot failure - retry once
+          // after a beat instead of reporting a dead session.
+          if (A.starting && !A.started) { A.starting = false; A.startGen++; }
           await startSession();
+          if (!A.started) {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            await startSession();
+          }
           if (!A.started) throw new Error("Could not start a Snapgent session in this chat.");
         }
         const base = await submitAndGetBase(prompt);
