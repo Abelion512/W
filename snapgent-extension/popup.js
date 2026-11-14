@@ -11,8 +11,11 @@ const DEFAULT_AI_URL = "https://chatgpt.com/";
 // explains what each launcher configures. Linux is the default when the
 // platform string is empty, because that is the only supported OS whose
 // launcher is a script rather than a double-clickable file.
-const LAUNCHER = /Mac/i.test(navigator.platform) ? "MacOS_Start.command"
-  : /Linux|X11/i.test(navigator.platform) ? "Linux_Start.sh"
+// `navigator` is absent in the stub-DOM test runner (plain Node), so read it
+// defensively rather than crash the whole popup on load.
+const PLATFORM = typeof navigator !== "undefined" && navigator.platform ? navigator.platform : "";
+const LAUNCHER = /Mac/i.test(PLATFORM) ? "MacOS_Start.command"
+  : /Linux|X11/i.test(PLATFORM) ? "Linux_Start.sh"
   : "start.bat";
 
 
@@ -38,7 +41,9 @@ function serverLines(s, list) {
   const diag = s.bridgeStatus;
   if (diag && Array.isArray(diag.servers) && diag.servers.length) {
     return diag.servers.map((x) => {
-      const parts = [x.alive ? "●" : "○", x.id];
+      // "● repo" reads as one token; a separator between the dot and the id
+      // looked like a missing server name.
+      const parts = [`${x.alive ? "●" : "○"} ${x.id}`];
       parts.push(x.alive ? `${x.tools} tools` : "down");
       const rss = fmtRss(x.rss_kib);
       if (rss && x.alive) parts.push(rss);
