@@ -1400,6 +1400,10 @@
     A.loopKey = null; // pinned by syncSessionState once this chat has an id + content
     let truncCount = 0;
     const MAX_TRUNC = 6;
+    // Bounded retries for a turn the site leaves blank (most often right after a
+    // tool result). One blank turn must not end the whole task with no answer.
+    let emptyCount = 0;
+    const MAX_EMPTY = 2;
     // Re-send the command list after this many successful tool calls. Kept high
     // so the reminder does not bloat the context too often.
     const REMIND_TOOLS_EVERY = 20;
@@ -1483,7 +1487,19 @@
         // failure: the pending command just settles to a grey "not run" with no
         // explanation anywhere. Say what happened.
         if (res.kind === "empty") {
-          diag("empty.end");
+          // The site does occasionally create an assistant turn and leave it
+          // blank - most visibly after a tool result. Ending here threw away a
+          // task the model could usually finish, so nudge it once or twice with
+          // a plain-text instruction before giving up. Bounded, so a genuinely
+          // silent site still ends promptly.
+          if (emptyCount < MAX_EMPTY && !A.stop) {
+            emptyCount++;
+            diag("empty.retry", { n: emptyCount });
+            ui.toast("Empty reply - asking again…");
+            base = await submitAndGetBase(ZS.FEEDBACK.emptyReply);
+            continue;
+          }
+          diag("empty.end", { retries: emptyCount });
           ui.banner("warn", `${P.displayName} returned an empty reply`,
             `Nothing received. Try again.`);
           break;
@@ -1513,6 +1529,7 @@
           break;
         }
         truncCount = 0;
+        emptyCount = 0;
 
         if (res.kind === "parse_error") {
           // The command turn ended in a parse error - it NEVER ran. Paint its chip
@@ -3132,16 +3149,22 @@
 
     function setTarget(id = selectedTargetId) {
       if (!targetSelect) return;
-      const options = [
-        { id: "vscode", name: "VS Code" },
-        { id: "roblox", name: "Roblox Studio" },
-        { id: "effectcraft", name: "EffectCraft" },
-        ...mergedMcpServers()
-          .filter((server) => !["vscode", "roblox", "effectcraft"].includes(server.id))
-          .map((server) => ({ id: server.id, name: getTargetName(server.id) })),
-      ].filter((option) => isMcpEnabled(option.id));
+      const options = allMcpOptions().filter((option) => isMcpEnabled(option.id));
       if (!options.some((option) => option.id === id)) {
-        options.push({ id, name: id });
+        // The saved/previous target no longer exists (for example the bridge
+        // stopped reporting VS Code). Follow the bridge instead of keeping a
+        // label that cannot run anything.
+        const fallback = options[0];
+        if (fallback) {
+          id = fallback.id;
+          if (selectedTargetId !== id) {
+            selectedTargetId = id;
+            try { chrome.storage.local.set({ [TARGET_STORAGE_KEY]: id }); } catch {}
+            refreshActiveToolNames();
+          }
+        } else {
+          options.push({ id, name: id });
+        }
       }
       const optionsKey = options.map((option) => `${option.id}:${option.name}`).join("|");
       if (targetSelect.dataset.optionsKey !== optionsKey) {
@@ -3152,8 +3175,15 @@
       }
       targetSelect.value = id;
       targetSelect.disabled = false; // never locked: the user may switch MCP target at any time
-      const nameEl = root && root.querySelector("#zs-target-name");
-      if (nameEl) nameEl.textContent = (options.find((option) => option.id === id) || { name: id }).name;
+      // Read the label back from the select so the pill can never drift from
+      // the option list (a stale "VS Code" pill over a `repo`-only bridge was
+      // the visible symptom).
+      const nameEl = (root && root.querySelector("#zs-target-name")) || document.getElementById("zs-target-name");
+      const selectedOption = targetSelect.options[targetSelect.selectedIndex];
+      const label = selectedOption
+        ? selectedOption.textContent
+        : (options.find((option) => option.id === id) || { name: id }).name;
+      if (nameEl && nameEl.textContent !== label) nameEl.textContent = label;
       if (targetMenuEl && !targetMenuEl.hidden) renderTargetMenu();
     }
 
@@ -3206,12 +3236,18 @@
     // One popover holding every secondary control. Opens above the bar.
     // ── MCP settings popup (toggle which servers are enabled) ───────────────
     function allMcpOptions() {
+      const live = mergedMcpServers();
+      const known = new Set(live.map((server) => server.id));
+      // The bridge is the source of truth. The legacy defaults only stand in
+      // before the first status arrives (or while the bridge is unreachable),
+      // so a Linux `repo`-only bridge never shows VS Code/Roblox/EffectCraft
+      // targets that cannot receive a command.
       const base = [
         { id: "vscode", name: "VS Code" },
         { id: "roblox", name: "Roblox Studio" },
         { id: "effectcraft", name: "EffectCraft" },
-      ];
-      const extra = mergedMcpServers()
+      ].filter((option) => known.has(option.id) || live.length === 0);
+      const extra = live
         .filter((s) => !base.some((b) => b.id === s.id))
         .map((s) => ({ id: s.id, name: getTargetName(s.id) }));
       return [...base, ...extra];
@@ -4359,7 +4395,39 @@
       }
       wrap.appendChild(body);
       root.appendChild(wrap);
+      placeShot(wrap);
     }
+
+    // Anchor the preview to the composer instead of the page corner: bottom-right
+    // of the input bar when there is room above it, otherwise top-right. Width
+    // and body height follow the composer/viewport, so the card stays compact on
+    // a wide screen and never covers the input it belongs to.
+    let shotNode = null;
+    function placeShot(wrap) {
+      shotNode = wrap;
+      const bar = document.getElementById("zs-bar");
+      const rect = bar && bar.getClientRects().length ? bar.getBoundingClientRect() : null;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const width = Math.round(Math.min(300, Math.max(200, (rect ? rect.width : vw) * 0.34)));
+      wrap.style.width = `${width}px`;
+      const above = rect && rect.top > 240;
+      if (above) {
+        wrap.style.right = `${Math.max(12, Math.round(vw - rect.right))}px`;
+        wrap.style.left = "auto";
+        wrap.style.bottom = `${Math.max(12, Math.round(vh - rect.top + 10))}px`;
+        wrap.style.top = "auto";
+      } else {
+        wrap.style.right = "18px";
+        wrap.style.left = "auto";
+        wrap.style.top = "72px";
+        wrap.style.bottom = "auto";
+      }
+      const room = above ? Math.round(rect.top - 80) : Math.round(vh * 0.5);
+      const body = wrap.querySelector(".zs-shot-body");
+      if (body) body.style.maxHeight = `${Math.max(120, Math.min(Math.round(vh * 0.42), room))}px`;
+    }
+    window.addEventListener("resize", () => { if (shotNode && shotNode.isConnected) placeShot(shotNode); });
 
     build();
     return { setStatus, setTarget, getTargetName, staleExtensionAlert, setStarted, setStarting, showStop, markStopping, inputCover, toast, banner, showImages, nudgeStart, updateStartGate, refreshSetup, getCustomPrompt, openMenu: (toSupport) => openMenuFn && openMenuFn(toSupport) };
@@ -4614,6 +4682,24 @@
 
   // A2A delegation: run one prompt to completion and report the final text
   // back to the background worker. The background relays it to the bridge.
+  // ── A2A cancellation ────────────────────────────────────────────────────
+  // The caller (bridge) gives up on a deadline, but the tab used to keep
+  // generating forever: A.running stayed true, so every later prompt hit
+  // "already working on another task" until the page was reloaded by hand.
+  // The bridge now sends zs-a2a-abort on timeout; the hard cap below is the
+  // safety net for when even that message cannot arrive (extension reloaded,
+  // socket gone). Both routes stop the native generation and let the loop end.
+  const A2A_HARD_CAP_MS = 15 * 60 * 1000;
+  let a2aAborted = false;
+  let a2aCurrentId = null;
+  function abortA2A(reason) {
+    if (!a2aCurrentId) return;
+    a2aAborted = true;
+    A.stop = true;                     // the loop's own stop path, not a hack
+    try { P.stopGeneration(); } catch {}
+    diag("a2a.abort", { reason, promptId: a2aCurrentId });
+  }
+
   async function runA2APrompt(prompt, promptId) {
     const reply = (payload) => {
       try {
@@ -4622,17 +4708,39 @@
     };
     try {
       if (A.running || A.starting || A.injecting) throw new Error("The web AI is already working on another task.");
-      if (!A.started) {
-        await startSession();
-        if (!A.started) throw new Error("Could not start a Snapgent session in this chat.");
+      a2aAborted = false;
+      a2aCurrentId = promptId;
+      const cap = setTimeout(() => abortA2A("hard-cap"), A2A_HARD_CAP_MS);
+      try {
+        if (!A.started) {
+          await startSession();
+          if (!A.started) throw new Error("Could not start a Snapgent session in this chat.");
+        }
+        const base = await submitAndGetBase(prompt);
+        await agentLoop(base);          // returns when no tool call is pending
+      } finally {
+        clearTimeout(cap);
       }
-      const base = await submitAndGetBase(prompt);
-      await agentLoop(base);            // returns when no tool call is pending
+      if (a2aAborted) {
+        reply({ ok: false, error: "The task was cancelled: the caller stopped waiting." });
+        return;
+      }
       const item = P.lastAssistant();
       const text = item ? P.itemText(item) : "";
-      reply({ ok: true, text: text || "" });
+      // An empty final turn is a FAILED delegation, not a successful one with a
+      // blank artifact: the A2A client must be able to tell the difference.
+      if (!text) {
+        reply({ ok: false, error: "The web AI returned an empty reply." });
+        return;
+      }
+      // Token count is an estimate (~4 chars/token) - the web UI does not expose
+      // the model's real usage - but it is enough for the popup's task line.
+      reply({ ok: true, text, tokens: Math.max(1, Math.round(text.length / 4)) });
     } catch (e) {
       reply({ ok: false, error: String((e && e.message) || e) });
+    } finally {
+      if (a2aCurrentId === promptId) a2aCurrentId = null;
+      a2aAborted = false;
     }
   }
 
@@ -4645,6 +4753,10 @@
     }
     if (msg && msg.type === "zs-a2a-prompt") {
       runA2APrompt(msg.prompt, msg.promptId); // async; result goes via runtime message
+    }
+    if (msg && msg.type === "zs-a2a-abort") {
+      // Only the run the bridge is waiting on may be cancelled.
+      if (!msg.promptId || msg.promptId === a2aCurrentId) abortA2A("bridge-cancel");
     }
   });
 

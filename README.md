@@ -178,6 +178,14 @@ Keep the terminal window open while the bridge runs.
 **Connecting the extension**
 
 Open the snapgentV3 popup — it connects on its own. There is nothing to copy.
+
+The popup is one screen: a status card (bridge, tool count, uptime, one line per
+MCP server) and, underneath it, the **last A2A task** — which model ran, at what
+effort tier, roughly how many tokens, how long it took, and whether it failed. A
+failed task is labelled, never silently shown as a healthy run. The three actions
+(**Reconnect**, **Restart**, **Settings**) sit side by side; **Restart** restarts
+the MCP servers only, it does not load new bridge code.
+
 The bridge accepts a browser extension on the Origin allowlist (a web page
 cannot forge a `chrome-extension://` Origin, and an extension cannot exist
 without you installing it) and refuses everything else, so a regular web page

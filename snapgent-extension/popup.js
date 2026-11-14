@@ -7,6 +7,14 @@ const SUPPORTED_HOSTS = [
 // const DEFAULT_AI_URL = "https://chat.deepseek.com/"; // DeepSeek hidden (disabled, not deleted)
 const DEFAULT_AI_URL = "https://chatgpt.com/";
 
+// One popup, three launchers. Name the file the user actually has; the README
+// explains what each launcher configures. Linux is the default when the
+// platform string is empty, because that is the only supported OS whose
+// launcher is a script rather than a double-clickable file.
+const LAUNCHER = /Mac/i.test(navigator.platform) ? "MacOS_Start.command"
+  : /Linux|X11/i.test(navigator.platform) ? "Linux_Start.sh"
+  : "start.bat";
+
 
 
 function fmtUptime(seconds) {
@@ -31,7 +39,6 @@ function serverLines(s, list) {
   if (diag && Array.isArray(diag.servers) && diag.servers.length) {
     return diag.servers.map((x) => {
       const parts = [x.alive ? "●" : "○", x.id];
-      if (x.pid) parts.push(`pid ${x.pid}`);
       parts.push(x.alive ? `${x.tools} tools` : "down");
       const rss = fmtRss(x.rss_kib);
       if (rss && x.alive) parts.push(rss);
@@ -93,18 +100,48 @@ function render(s) {
   setHidden("rotate-token", !(s.connected && s.savedToken));
   const ver = document.getElementById("ver");
   const extVer = chrome.runtime.getManifest().version;
-  ver.textContent = !s.connected ? `ext v${extVer}`
-    : s.bridgeVersion ? `ext v${extVer} · bridge v${s.bridgeVersion}`
-    : `ext v${extVer} · bridge old`;
+  ver.textContent = !s.connected ? `v${extVer}`
+    : s.bridgeVersion ? `v${extVer} · bridge ${s.bridgeVersion}`
+    : `v${extVer}`;
   tools.textContent = s.connected
     ? `${s.tools || 0} tools`
       + (s.bridgeStatus && s.bridgeStatus.uptime_seconds != null
-          ? ` · bridge up ${fmtUptime(s.bridgeStatus.uptime_seconds)}`
+          ? ` · up ${fmtUptime(s.bridgeStatus.uptime_seconds)}`
           : "")
     : s.authRequired ? "Paste the token below"
     : s.rotatingToken ? "New token saved"
-    : "Run start.bat";
+    : `Run ${LAUNCHER}`;
   servers.textContent = s.connected ? serverLines(s, list).join("\n") : "";
+  renderUsage(s.usage);
+}
+
+// Last task, one short line: `deepseek · light · ~120 tok · 21s`. Model and
+// effort come from the routing decision, tokens are an estimate (the web UI
+// never exposes real usage), and a failed task is marked so it is not mistaken
+// for a healthy run.
+function renderUsage(u) {
+  const node = document.getElementById("usage");
+  if (!node) return;
+  node.textContent = "";
+  if (!u || !u.provider) return;
+  const parts = [];
+  const model = document.createElement("span");
+  model.className = "u-model";
+  model.textContent = u.provider;
+  parts.push(model);
+  // "pinned" is a routing label, not an effort tier the user chose - omit it.
+  if (u.effort && u.effort !== "pinned") parts.push(` · ${u.effort}`);
+  if (typeof u.tokens === "number") parts.push(` · ~${u.tokens} tok`);
+  if (typeof u.seconds === "number") parts.push(` · ${u.seconds}s`);
+  if (u.ok === false) {
+    const bad = document.createElement("span");
+    bad.className = "u-bad";
+    bad.textContent = " · failed";
+    parts.push(bad);
+  }
+  for (const part of parts) {
+    node.appendChild(typeof part === "string" ? document.createTextNode(part) : part);
+  }
 }
 
 // Set once per popup load, so a bridge that keeps refusing cannot loop.
@@ -191,5 +228,15 @@ document.getElementById("settings").addEventListener("click", () => {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === "zs-status") render(msg);
 });
+// The static HTML names the Windows launcher so it stays readable without JS;
+// correct it to the platform the user is actually on.
+const hint = document.getElementById("launch-hint");
+if (hint) {
+  const code = document.createElement("code");
+  code.textContent = LAUNCHER;
+  hint.textContent = "Start with ";
+  hint.appendChild(code);
+  hint.appendChild(document.createTextNode("."));
+}
 refresh();
 setInterval(refresh, 2000);

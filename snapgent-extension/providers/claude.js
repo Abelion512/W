@@ -34,6 +34,10 @@ const ZSProvider = (() => {
       'button[aria-label*="stop"]',
     ].join(","),
     thinking: '[data-testid*="thinking"],[class*="thinking"],[class*="reasoning"]',
+    // UI that lives INSIDE an assistant turn but is not the answer: the action
+    // bar (copy/retry, whose labels are private-use icon glyphs), the "just now"
+    // timestamp, and screen-reader-only live regions ("Claude responded:").
+    chrome: 'time,button,[role="button"],[aria-hidden="true"],.sr-only,[class*="sr-only"]',
     errors: '[role="alert"],[data-testid*="error"],[class*="error-message"]',
   };
 
@@ -48,7 +52,7 @@ const ZSProvider = (() => {
   const visible = (el) => !!el && el.isConnected && el.getClientRects().length > 0;
   const without = (root, excludeSel) => {
     if (!root) return "";
-    const skip = [".zs-chip", S.thinking, excludeSel].filter(Boolean).join(",");
+    const skip = [".zs-chip", S.thinking, S.chrome, excludeSel].filter(Boolean).join(",");
     let text = "";
     const visit = (node) => {
       if (node.nodeType === Node.TEXT_NODE) {
@@ -60,7 +64,8 @@ const ZSProvider = (() => {
       for (const child of node.childNodes) visit(child);
     };
     visit(root);
-    return text;
+    // Strip private-use glyphs (icon fonts) so callers never see them.
+    return text.replace(/[\uE000-\uF8FF]/g, "");
   };
 
   const isAssistantItem = (item) => !!item &&

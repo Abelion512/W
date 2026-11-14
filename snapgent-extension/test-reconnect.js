@@ -48,7 +48,10 @@ const chrome = {
   storage: {
     local: {
       get: (key, cb) => {
-        const values = typeof key === "string" ? { [key]: store[key] } : { ...store };
+        // chrome.storage accepts a string, an array or an object of defaults.
+        const values = typeof key === "string" ? { [key]: store[key] }
+          : Array.isArray(key) ? Object.fromEntries(key.map((k) => [k, store[k]]))
+          : { ...store };
         if (cb) cb(values);
         return Promise.resolve(values);
       },
@@ -146,7 +149,13 @@ const send = (msg) => new Promise((resolve) => onRuntimeMessage(msg, {}, resolve
   const slowChrome = Object.assign({}, chrome, {
     storage: {
       local: {
-        get: (key, cb) => { setTimeout(() => cb({ [key]: store[key] }), 30); return Promise.resolve({}); },
+        get: (key, cb) => {
+          const values = Array.isArray(key)
+            ? Object.fromEntries(key.map((k) => [k, store[k]]))
+            : { [key]: store[key] };
+          setTimeout(() => cb(values), 30);
+          return Promise.resolve({});
+        },
         set: (obj, cb) => { Object.assign(store, obj); if (cb) cb(); return Promise.resolve(); },
         remove: (key, cb) => { delete store[key]; if (cb) cb(); return Promise.resolve(); },
       },

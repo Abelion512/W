@@ -1005,8 +1005,13 @@ html.zs-light .zs-banner-acts .zs-banner-x { color: #a16207; }
 #zs-setup-dismiss:hover { background: rgba(255, 255, 255, 0.06); }
 
 /* ── capture preview popup (left-hand, snapgentV3 style) ─────── */
+/* Capture preview: a compact card that the core anchors just above the
+   composer (see placeShot), hugging the input bar instead of floating as a wide
+   slab in the page corner. The inline width/max-height win; these are the
+   fallbacks for the first frame and for viewports where the composer cannot be
+   measured. */
 .zs-shot {
-  position: fixed; left: 18px; top: 72px; width: 300px; max-width: 32vw;
+  position: fixed; left: 18px; top: 72px; width: 288px; max-width: calc(100vw - 24px);
   background: #161618; color: #ececee;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
@@ -1027,10 +1032,14 @@ html.zs-light .zs-banner-acts .zs-banner-x { color: #a16207; }
 }
 .zs-shot-x:hover { color: #ececee; }
 .zs-shot-body {
-  padding: 10px; max-height: 70vh; overflow-y: auto;
+  padding: 8px; max-height: 42vh; overflow-y: auto;
   display: flex; flex-direction: column; gap: 8px;
 }
-.zs-shot-img { display: block; width: 100%; height: auto; border-radius: 8px; background: rgba(0, 0, 0, 0.25); }
+.zs-shot-img {
+  display: block; width: 100%; height: auto; border-radius: 7px;
+  background: rgba(0, 0, 0, 0.25);
+}
+html.zs-light .zs-shot-img { background: rgba(0, 0, 0, 0.06); }
 html.zs-light .zs-shot { background: #ffffff; color: #1d232e; border-color: rgba(0,0,0,0.1); }
 html.zs-light .zs-shot-hdr { border-bottom-color: rgba(0,0,0,0.08); }
 html.zs-light .zs-shot-ttl { color: #1d232e; }

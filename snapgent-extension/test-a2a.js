@@ -42,7 +42,9 @@ let onRuntimeMessage = null;
 // runtime message) and only "no receiver" as failure.
 let nextSendError = null;
 let lastError = null;
-const providerTab = { id: 7, active: true };
+const providerTab = { id: 7, active: true, url: "https://chatgpt.com/" };
+// Route tests swap this list in; null means "just the default provider tab".
+let tabsForQuery = null;
 const chrome = {
   runtime: {
     sendMessage: () => Promise.resolve(),
@@ -64,8 +66,9 @@ const chrome = {
     },
   },
   tabs: {
-    query: (_info, cb) => {
-      const tabs = [providerTab];
+    query: (info, cb) => {
+      let tabs = tabsForQuery || [providerTab];
+      if (info && info.active) tabs = tabs.filter((t) => t.active);
       if (cb) cb(tabs);
       return Promise.resolve(tabs);
     },
@@ -91,7 +94,7 @@ const importScripts = (relpath) => {
 
 const src = fs.readFileSync(__dirname + "/background.js", "utf8");
 const api = new Function("chrome", "WebSocket", "importScripts",
-  src + "; return { handleBridgeMessage, handleSubmitPrompt };"
+  src + "; return { handleBridgeMessage, handleSubmitPrompt, routeFor, tabForRoute, TIER_PROVIDERS, CATEGORY_PROVIDERS, PROVIDER_HOSTS };"
 )(chrome, StubWebSocket, importScripts);
 
 const results = [];
@@ -157,6 +160,111 @@ const until = async (cond, ms = 1000) => {
   const failed = frames.find((f) => f.type === "prompt_result" && f.prompt_id === "p3");
   ok("failed a2a_result forwards ok:false", failed && failed.ok === false);
   ok("failed a2a_result forwards the error", failed && failed.error === "boom");
+
+  // ── model-tier routing ───────────────────────────────────────────────────
+  tabsForQuery = [
+    { id: 7, active: true, url: "https://chatgpt.com/c/1" },
+    { id: 9, active: false, url: "https://chat.deepseek.com/a/chat" },
+  ];
+  tabSends.length = 0;
+  await api.handleSubmitPrompt({ id: "p4", prompt: "quick", metadata: { taskCategory: "extract" } });
+  const light = tabSends.find((s) => s.msg.type === "zs-a2a-prompt");
+  ok("category 'extract' routes to the light provider (DeepSeek)", light && light.tabId === 9);
+  ok("relayed prompt labels the light tier", light && light.msg.route === "light");
+
+  tabSends.length = 0;
+  await api.handleSubmitPrompt({ id: "p5", prompt: "design", metadata: { modelTier: "deep" } });
+  const deep = tabSends.find((s) => s.msg.type === "zs-a2a-prompt");
+  ok("explicit 'deep' tier routes to the deep provider (ChatGPT)", deep && deep.tabId === 7);
+  ok("relayed prompt labels the deep tier", deep && deep.msg.route === "deep");
+
+  // Declared complexity wins over the category default: a small code edit is a
+  // light task even though "code-edit" defaults to the balanced tier.
+  tabsForQuery = [
+    { id: 21, active: true, url: "https://claude.ai/new" },
+    { id: 22, active: false, url: "https://gemini.google.com/app" },
+  ];
+  tabSends.length = 0;
+  await api.handleSubmitPrompt({ id: "p8", prompt: "rename", metadata: { taskCategory: "code-edit", complexity: "low" } });
+  const small = tabSends.find((s) => s.msg.type === "zs-a2a-prompt");
+  ok("complexity 'low' downgrades a code-edit to the light tier (Gemini)", small && small.tabId === 22);
+  ok("relayed prompt labels the downgraded tier", small && small.msg.route === "light");
+
+  // Category overrides pick a specialist list ahead of tier preference.
+  tabsForQuery = [
+    { id: 31, active: true, url: "https://gemini.google.com/app" },
+    { id: 32, active: false, url: "https://grok.com/chat" },
+  ];
+  tabSends.length = 0;
+  await api.handleSubmitPrompt({ id: "p9", prompt: "today's news", metadata: { taskCategory: "realtime" } });
+  const live = tabSends.find((s) => s.msg.type === "zs-a2a-prompt");
+  ok("category 'realtime' routes to Grok over the tier order", live && live.tabId === 32);
+
+  // Preferred providers are all closed -> fall back to the active tab, not the first.
+  tabsForQuery = [{ id: 11, active: true, url: "https://chat.mistral.ai/chat" }];
+  tabSends.length = 0;
+  await api.handleSubmitPrompt({ id: "p6", prompt: "review", metadata: { modelTier: "deep" } });
+  const fallback = tabSends.find((s) => s.msg.type === "zs-a2a-prompt");
+  ok("missing preferred providers falls back to the active tab", fallback && fallback.tabId === 11);
+
+  // No route metadata -> today's active-tab behaviour.
+  tabsForQuery = null;
+  tabSends.length = 0;
+  await api.handleSubmitPrompt({ id: "p7", prompt: "plain" });
+  const plain = tabSends.find((s) => s.msg.type === "zs-a2a-prompt");
+  ok("no metadata keeps the active-tab behaviour", plain && plain.tabId === 7);
+
+  // ── routing table covers all twelve configured providers ──────────────────
+  const routing = api.TIER_PROVIDERS;
+  const categories = api.CATEGORY_PROVIDERS;
+  const hosts = api.PROVIDER_HOSTS;
+  const allProviders = Object.keys(hosts).sort();
+  // The twelve accounts the user actually holds, plus Arena and Meta which are
+  // registered but untested (no routing weight).
+  const coreProviders = ["claude", "chatgpt", "kimi", "grok", "deepseek", "glm", "gemini",
+                         "qwen", "ptero", "manus", "mistral", "rudder"];
+  ok("all twelve core providers have host patterns",
+     coreProviders.every((p) => Array.isArray(hosts[p]) && hosts[p].length > 0) && allProviders.length === 14);
+
+  // Ptero and Manus are listed for completeness but no text task may route there.
+  const textProviders = [...new Set([...Object.values(routing).flat(), ...Object.values(categories).flat()])];
+  const nonText = ["ptero", "manus"];
+  ok("every text route names a provider with a host pattern",
+     textProviders.every((p) => Array.isArray(hosts[p]) && hosts[p].length > 0));
+  ok("non-text providers are excluded from every text route",
+     nonText.every((p) => !textProviders.includes(p)) && nonText.every((p) => allProviders.includes(p)));
+
+  // Every listed provider must resolve when its tab is the only one open.
+  const unresolved = textProviders.filter((p) => {
+    const tab = { id: 99, url: "https://" + hosts[p][0] + "/chat" };
+    const hit = api.tabForRoute([tab], { providers: [p] });
+    return !hit || hit.id !== 99;
+  });
+  ok("every routed provider matches its own host pattern", unresolved.length === 0, unresolved.join(","));
+
+  // An explicit pin wins over tier/category/complexity and has no fallback: a
+  // caller that asked for Grok must not silently get ChatGPT.
+  tabsForQuery = [
+    { id: 41, active: true, url: "https://chatgpt.com/c/1" },
+    { id: 42, active: false, url: "https://grok.com/chat" },
+  ];
+  tabSends.length = 0;
+  await api.handleSubmitPrompt({ id: "p10", prompt: "pinned", metadata: { provider: "grok", modelTier: "deep" } });
+  const pinned = tabSends.find((s) => s.msg.type === "zs-a2a-prompt");
+  ok("metadata.provider pins the provider over the tier list", pinned && pinned.tabId === 42);
+  ok("pinned route is labelled as such", pinned && pinned.msg.route === "pinned");
+
+  // A pin to a provider whose tab is closed falls back to the active tab, not
+  // to another provider that happens to be open.
+  tabsForQuery = [{ id: 43, active: true, url: "https://chatgpt.com/c/2" }];
+  tabSends.length = 0;
+  await api.handleSubmitPrompt({ id: "p11", prompt: "pinned missing", metadata: { provider: "grok" } });
+  const pinnedMissing = tabSends.find((s) => s.msg.type === "zs-a2a-prompt");
+  ok("a closed pinned provider falls back to the active tab", pinnedMissing && pinnedMissing.tabId === 43);
+
+  // No text tier may list a provider twice (order is the contract).
+  const duplicated = Object.entries(routing).filter(([, list]) => new Set(list).size !== list.length).map(([t]) => t);
+  ok("no tier repeats a provider", duplicated.length === 0, duplicated.join(","));
 
   // ── prompt_ack is swallowed (fire-and-forget relay) ───────────────────────
   const before = frames.length;
