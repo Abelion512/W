@@ -1,0 +1,39 @@
+A2A TASK FLOW - one delegation, from caller to verified result
+================================================================
+
+ Client (Hermes / Claude Code)
+        |
+        |  SendMessage + metadata
+        |  {taskCategory, modelTier, provider, contextFiles}
+        v
+ A2A server  http://127.0.0.1:17614
+        |
+        |  submit_prompt   (single flight: one prompt at a time)
+        v
+ Bridge ---> routeFor  (provider > modelTier > taskCategory > complexity)
+        |
+        v
+ Provider tab (web AI)
+        |  \
+        |   \-- tool call  ----------------------------> Bridge
+        |   /-- tool result <--------------------------- Bridge
+        |
+        |  final text
+        v
+ Bridge ---> A2A server
+        |
+        v
+ Harness: run acceptance checks
+        |
+        +-- pass --> done (verified result returned to the caller)
+        |
+        +-- fail --> retry, with the failing output as feedback
+                      (back through the A2A server, same flow)
+
+ Notes
+ -----
+ * Empty reply = failure, never a successful blank result.
+ * Caller deadline expires -> bridge sends cancel_prompt -> the tab stops
+   generating and clears its running state (15 min hard cap as safety net).
+ * Pinned provider with no open tab -> the ACTIVE provider tab, never a
+   different provider the caller did not ask for.

@@ -1,0 +1,15 @@
+%% A2A task flow: one delegation, from the caller to a verified result.
+%% Render: npx --yes @mermaid-js/mermaid-cli@11 -i docs/flows/a2a-task.mmd \
+%%           -o docs/assets/a2a-task-flow.svg
+flowchart LR
+  client["Client<br/>Hermes / Claude Code"] -->|"SendMessage<br/>metadata"| server["A2A server<br/>127.0.0.1:17614"]
+  server -->|"submit_prompt"| bridge["Bridge<br/>single-flight"]
+  bridge -->|"routeFor<br/>pin > tier > category"| tab["Provider tab<br/>web AI"]
+  tab -->|"tool call"| bridge
+  bridge -->|"tool result"| tab
+  tab -->|"final text"| bridge
+  bridge -->|"task result"| server
+  server -->|"verify: acceptance checks"| harness{"checks pass?"}
+  harness -->|"yes"| done["Done<br/>verified result"]
+  harness -->|"no"| retry["Retry with<br/>the failure"]
+  retry -->|"feedback"| server

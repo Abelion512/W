@@ -13,6 +13,18 @@ Fixes #
 |---|---|---|
 | | | |
 
+## Flow (when the change moves data or control)
+
+<!-- GitHub does NOT render Mermaid in comments, and only sometimes in a PR body.
+     Paste the IMAGE for anything other people will read out of context, and keep
+     the Mermaid/ASCII source in the repo so it can be edited later:
+       ![flow](docs/assets/a2a-task-flow.svg)
+     Sources: docs/flows/a2a-task.md (image + Mermaid + ASCII), docs/flows/
+     a2a-task.mmd, docs/flows/a2a-task.txt. Delete this section if the change does
+     not move data or control. -->
+
+![flow](docs/assets/a2a-task-flow.svg)
+
 ## Verification
 
 <!-- Facts, not adjectives. Paste the command and its result. A live check that
