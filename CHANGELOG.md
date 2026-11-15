@@ -5,6 +5,21 @@ All notable changes to snapgentV3 Free are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **Grok's prompt reaches the composer again.** grok.com keeps a hidden mirror
+  `<textarea>` (0px tall) beside the real tiptap editor, and `querySelectorAll`
+  returns *document* order, so selector order never helped: the prompt was typed
+  into the mirror, the editor stayed empty and every start died with "Grok send
+  button did not become available" (`start.noToolCall {textLen:0}`). The editor is
+  now chosen by box size, and the cold-start restore is handled too - a tab on
+  `/c/<id>` counts as "has messages" even before its turns mount, so the opening
+  prompt no longer lands in a thread that re-renders under it. A cold reply got a
+  150s warmup window (measured ~100-120s) instead of 60s. Added
+  `snapgent-extension/test-grok-editor.js` to CI.
+- **A refused session now reports the site's own reason.** startSession's failure
+  text (e.g. Grok's "Free tier limit reached", read from its
+  `usage-limit-notice`) is carried into the A2A error, so a quota block is
+  reported as a block instead of 90s of waiting and a bare "could not start a
+  session".
 - **The in-page bar reads as part of the composer.** On Claude and Gemini it was
   a translucent card with its own radius and an 8px gap above the input, i.e. a
   second widget stacked on the composer; it is now a flat, flush row. On Grok,
