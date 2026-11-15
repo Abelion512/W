@@ -39,17 +39,17 @@ const base = {
   tools: 28, servers: [{ id: "repo", alive: true, tools: 28 }],
 };
 
-// 1. With a diagnostic snapshot: pid, RSS, uptime.
+// 1. With a diagnostic snapshot: tools, RSS, uptime. The pid is deliberately
+// left out of the popup line - it is noise for the user and made the row long.
 render({ ...base, bridgeStatus: {
   uptime_seconds: 754, clients_connected: 1, tools_available: 28,
   servers: [{ id: "repo", alive: true, ready: true, tools: 28, pid: 1719322,
     error: null, restart_attempts: 0, next_restart_in_seconds: 0, rss_kib: 15588 }],
 }});
-ok("diag line has pid + tools + rss",
-  elements.servers.textContent.includes("pid 1719322")
-  && elements.servers.textContent.includes("28 tools")
-  && elements.servers.textContent.includes("15.2 MB"));
-ok("tools line has bridge uptime", elements.tools.textContent.includes("bridge up 12m"));
+ok("diag line has tools + rss",
+  elements.servers.textContent.includes("● repo · 28 tools · 15.2 MB"));
+ok("diag line omits the pid", !elements.servers.textContent.includes("pid"));
+ok("tools line has bridge uptime", elements.tools.textContent.includes("up 12m"));
 
 // 2. Dead server with backoff + error: retry countdown and truncated error.
 const longError = "x".repeat(200);

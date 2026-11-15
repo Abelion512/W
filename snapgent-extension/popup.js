@@ -7,6 +7,17 @@ const SUPPORTED_HOSTS = [
 // const DEFAULT_AI_URL = "https://chat.deepseek.com/"; // DeepSeek hidden (disabled, not deleted)
 const DEFAULT_AI_URL = "https://chatgpt.com/";
 
+// One popup, three launchers. Name the file the user actually has; the README
+// explains what each launcher configures. Linux is the default when the
+// platform string is empty, because that is the only supported OS whose
+// launcher is a script rather than a double-clickable file.
+// `navigator` is absent in the stub-DOM test runner (plain Node), so read it
+// defensively rather than crash the whole popup on load.
+const PLATFORM = typeof navigator !== "undefined" && navigator.platform ? navigator.platform : "";
+const LAUNCHER = /Mac/i.test(PLATFORM) ? "MacOS_Start.command"
+  : /Linux|X11/i.test(PLATFORM) ? "Linux_Start.sh"
+  : "start.bat";
+
 
 
 function fmtUptime(seconds) {
@@ -30,8 +41,9 @@ function serverLines(s, list) {
   const diag = s.bridgeStatus;
   if (diag && Array.isArray(diag.servers) && diag.servers.length) {
     return diag.servers.map((x) => {
-      const parts = [x.alive ? "●" : "○", x.id];
-      if (x.pid) parts.push(`pid ${x.pid}`);
+      // "● repo" reads as one token; a separator between the dot and the id
+      // looked like a missing server name.
+      const parts = [`${x.alive ? "●" : "○"} ${x.id}`];
       parts.push(x.alive ? `${x.tools} tools` : "down");
       const rss = fmtRss(x.rss_kib);
       if (rss && x.alive) parts.push(rss);
@@ -93,18 +105,57 @@ function render(s) {
   setHidden("rotate-token", !(s.connected && s.savedToken));
   const ver = document.getElementById("ver");
   const extVer = chrome.runtime.getManifest().version;
-  ver.textContent = !s.connected ? `ext v${extVer}`
-    : s.bridgeVersion ? `ext v${extVer} · bridge v${s.bridgeVersion}`
-    : `ext v${extVer} · bridge old`;
+  // One version normally. The bridge is only named when it differs from the
+  // extension, because that mismatch is the only time the number matters.
+  const bridgeMismatch = s.connected && s.bridgeVersion && s.bridgeVersion !== extVer;
+  ver.textContent = bridgeMismatch ? `v${extVer} · bridge ${s.bridgeVersion}` : `v${extVer}`;
   tools.textContent = s.connected
     ? `${s.tools || 0} tools`
       + (s.bridgeStatus && s.bridgeStatus.uptime_seconds != null
-          ? ` · bridge up ${fmtUptime(s.bridgeStatus.uptime_seconds)}`
+          ? ` · up ${fmtUptime(s.bridgeStatus.uptime_seconds)}`
           : "")
     : s.authRequired ? "Paste the token below"
     : s.rotatingToken ? "New token saved"
-    : "Run start.bat";
+    : `Run ${LAUNCHER}`;
   servers.textContent = s.connected ? serverLines(s, list).join("\n") : "";
+  servers.title = "MCP servers: state dot, name, tool count, memory";
+  renderUsage(s.usage);
+}
+
+// Last task, one short line: `deepseek · light · ~120 tok · 21s`. Model and
+// effort come from the routing decision, tokens are an estimate (the web UI
+// never exposes real usage), and a failed task is marked so it is not mistaken
+// for a healthy run.
+function renderUsage(u) {
+  const node = document.getElementById("usage");
+  if (!node) return;
+  node.textContent = "";
+  if (!u || !u.provider) return;
+  // A labelled line, so "deepseek · ~1 tok · 31s" reads as history rather than
+  // as five unlabelled numbers.
+  const label = document.createElement("span");
+  label.className = "u-label";
+  label.textContent = "Last task";
+  node.appendChild(label);
+  node.appendChild(document.createTextNode(" "));
+  const parts = [];
+  const model = document.createElement("span");
+  model.className = "u-model";
+  model.textContent = u.provider;
+  parts.push(model);
+  // "pinned" is a routing label, not an effort tier the user chose - omit it.
+  if (u.effort && u.effort !== "pinned") parts.push(` · ${u.effort}`);
+  if (typeof u.tokens === "number") parts.push(` · ~${u.tokens} tok`);
+  if (typeof u.seconds === "number") parts.push(` · ${u.seconds}s`);
+  if (u.ok === false) {
+    const bad = document.createElement("span");
+    bad.className = "u-bad";
+    bad.textContent = " · failed";
+    parts.push(bad);
+  }
+  for (const part of parts) {
+    node.appendChild(typeof part === "string" ? document.createTextNode(part) : part);
+  }
 }
 
 // Set once per popup load, so a bridge that keeps refusing cannot loop.
@@ -173,23 +224,48 @@ onClick("forget-token", () => {
     chrome.runtime.sendMessage({ type: "reconnect" }, () => setTimeout(refresh, 800));
   });
 });
-document.getElementById("settings").addEventListener("click", () => {
-  // Tries the in-page panel on an already-open supported AI tab first, so
-  // opening it doesn't require a conversation to already be started there.
+// Settings live in the in-page panel, so it needs a supported AI tab. Never
+// make the user open one first: reuse an open tab if there is one, otherwise
+// open one and wait for its content script before asking for the panel.
+const openSettings = () => {
   chrome.tabs.query({}, (tabs) => {
-    const active = tabs.find((t) => t.active && t.url && SUPPORTED_HOSTS.some((h) => t.url.includes(h)));
-    const anySupported = active || tabs.find((t) => t.url && SUPPORTED_HOSTS.some((h) => t.url.includes(h)));
-    if (anySupported) {
-      chrome.tabs.sendMessage(anySupported.id, { type: "zs-open-menu" });
-      chrome.tabs.update(anySupported.id, { active: true });
-    } else {
-      chrome.tabs.create({ url: DEFAULT_AI_URL });
+    const supported = (tabs || []).filter(
+      (t) => t.url && SUPPORTED_HOSTS.some((h) => t.url.includes(h))
+    );
+    const target = supported.find((t) => t.active) || supported[0];
+    if (target) {
+      chrome.tabs.update(target.id, { active: true });
+      chrome.tabs.sendMessage(target.id, { type: "zs-open-menu" });
+      return;
     }
+    chrome.tabs.create({ url: DEFAULT_AI_URL }, (tab) => {
+      if (!tab || typeof chrome.tabs.onUpdated?.addListener !== "function") return;
+      const onUpdated = (id, info) => {
+        if (id !== tab.id || info.status !== "complete") return;
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        // The content script mounts the bar right after load, so give it a beat
+        // before asking it to open the panel (a lost message is silent).
+        setTimeout(() => chrome.tabs.sendMessage(tab.id, { type: "zs-open-menu" }), 1200);
+      };
+      chrome.tabs.onUpdated.addListener(onUpdated);
+    });
   });
-});
+};
+const settingsButton = document.getElementById("settings");
+if (settingsButton) settingsButton.addEventListener("click", openSettings);
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === "zs-status") render(msg);
 });
+// The static HTML names the Windows launcher so it stays readable without JS;
+// correct it to the platform the user is actually on.
+const hint = document.getElementById("launch-hint");
+if (hint) {
+  const code = document.createElement("code");
+  code.textContent = LAUNCHER;
+  hint.textContent = "Start with ";
+  hint.appendChild(code);
+  hint.appendChild(document.createTextNode("."));
+}
 refresh();
 setInterval(refresh, 2000);

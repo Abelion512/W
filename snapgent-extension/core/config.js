@@ -132,6 +132,14 @@ const ZS = (() => {
       "(System note: your previous reply was cut off by a length limit before you " +
       "finished. Continue from exactly where you stopped. Do NOT restart and do " +
       "NOT repeat what you already wrote.)",
+    // The site occasionally drops a turn after a tool result: the assistant
+    // bubble is created but stays empty, so the loop would otherwise end with no
+    // answer at all (and A2A would report success with an empty artifact). A
+    // short plain-text nudge gives the model one more chance to answer.
+    emptyReply:
+      "(System note: your previous reply was empty - nothing was shown to the " +
+      "user. Answer the user's last request now in plain text, using the tool " +
+      "result above. Do NOT call a tool again unless you need a new result.)",
   };
 
   const BT = "```";

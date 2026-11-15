@@ -4,7 +4,28 @@ All notable changes to snapgentV3 Free are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **A timed-out A2A prompt no longer locks the tab.** The bridge sends
+  `cancel_prompt` when its deadline expires, the extension relays it to the tab,
+  and the tab stops the native generation and clears its running state; a
+  15-minute hard cap covers a lost cancel. Previously every later prompt failed
+  with "The web AI is already working on another task" until a manual reload.
+- **Claude reply text is clean.** The action bar (copy/retry, whose labels are
+  private-use icon glyphs), the "just now" timestamp and screen-reader live
+  regions ("Claude responded:") are excluded from the extracted message.
+
 ### Added
+- **`metadata.provider` pins one provider** and beats tier/category/complexity,
+  with no fallback chain (used for A/B comparisons and the live provider test).
+- **Popup task line.** The extension popup now shows the last A2A task: model,
+  effort (tier), estimated tokens and duration, read from the background worker
+  and persisted across worker evictions.
+- **Wider, quieter popup.** 460px borderless iOS-grouped layout with three
+  side-by-side actions and shorter labels; the capture preview in the page hugs
+  the composer instead of floating as a wide card in the corner.
+- **Live provider matrix** in `docs/model-routing.md`: seven of twelve text
+  providers verified end to end, the rest documented with the reason they stop
+  before a prompt is sent.
 - **A2A server facade:** `a2a_server.py` exposes the web AI chat as an A2A 1.0
   agent on `http://127.0.0.1:17614` (Agent Card, JSON-RPC 2.0, tasks, SSE
   streaming, bearer-token auth). The bridge starts and stops it in the same

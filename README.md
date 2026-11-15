@@ -178,6 +178,14 @@ Keep the terminal window open while the bridge runs.
 **Connecting the extension**
 
 Open the snapgentV3 popup — it connects on its own. There is nothing to copy.
+
+The popup is one screen: a status card (bridge, tool count, uptime, one line per
+MCP server) and, underneath it, the **last A2A task** — which model ran, at what
+effort tier, roughly how many tokens, how long it took, and whether it failed. A
+failed task is labelled, never silently shown as a healthy run. The three actions
+(**Reconnect**, **Restart**, **Settings**) sit side by side; **Restart** restarts
+the MCP servers only, it does not load new bridge code.
+
 The bridge accepts a browser extension on the Origin allowlist (a web page
 cannot forge a `chrome-extension://` Origin, and an extension cannot exist
 without you installing it) and refuses everything else, so a regular web page
@@ -293,7 +301,8 @@ snapgent-full/
 │   └── test_workspace_mcp.py  # Workspace MCP server tests
 ├── e2e/                       # Live end-to-end scripts (need a real bridge/browser)
 │   ├── e2e_live.py            # Real bridge + subprocess on an ephemeral port
-│   └── smoke_extension_live.py  # Handshake/rotation smoke in headless Chrome
+│   ├── smoke_extension_live.py  # Handshake/rotation smoke in headless Chrome
+│   └── a2a_matrix_live.py     # Per-provider A2A matrix, cold + warm rounds
 └── sync-upstream.sh           # Sync with upstream, keeping purged paths deleted
 ```
 
@@ -329,7 +338,10 @@ snapgent-extension/test-*.js` (extension stub-DOM), and
 GitHub Actions runs the same suites on every push/PR. The pairing and rotation
 handshake needs a real browser, so it has its own manual smoke:
 `/usr/bin/python3 e2e/smoke_extension_live.py` (headless Chrome, throwaway
-bridge on ports 17613/9333).
+bridge on ports 17613/9333). Routing and bootstrap across every provider have a
+manual matrix too: `python3 e2e/a2a_matrix_live.py` drives each provider through
+the real bridge with one cold (fresh-tab) and one warm (running-session) round
+per provider.
 
 ---
 

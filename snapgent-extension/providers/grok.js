@@ -5,6 +5,7 @@ const ZSProvider = (() => {
   "use strict";
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   let diag = () => {};
+  let missingEditorSince = 0;
   let lockedEditor = null;
   let sampledItem = null;
   let sampledLen = 0;
@@ -15,7 +16,14 @@ const ZSProvider = (() => {
   const S = {
     user: '[data-message-author-role="user"],[data-testid*="user-message"],[data-testid*="user-turn"],[data-testid*="conversation-turn"][data-role="user"]',
     assistant: '[data-message-author-role="assistant"],[data-testid*="assistant-message"],[data-testid*="assistant-turn"],[data-testid*="conversation-turn"][data-role="assistant"]',
-    editor: '[contenteditable="true"][role="combobox"][aria-label*="Grok" i],[contenteditable="true"][role="combobox"][aria-label*="Ask" i],#chat, textarea[placeholder*="Message" i], [contenteditable="true"][role="textbox"]',
+    // 2026-11 composer is a tiptap/ProseMirror div with no role and no aria-label
+    // (measured live), so the role-based selectors alone left mode_ready false and
+    // every start failed with "Grok mode not ready". The bare `textarea` at the
+    // end is the HOME composer (grok.com/ before any thread opens): a plain
+    // textarea with no class, placeholder or role - without it a cold start from
+    // the site root never found an editor at all. Put last so the richer
+    // thread-view selectors win on a conversation page.
+    editor: '[contenteditable="true"][role="combobox"][aria-label*="Grok" i],[contenteditable="true"][role="combobox"][aria-label*="Ask" i],#chat, textarea[placeholder*="Message" i], [contenteditable="true"][role="textbox"],.tiptap[contenteditable="true"],.ProseMirror[contenteditable="true"],textarea',
     errors: '[role="alert"],[data-testid*="error"],[class*="error-message"]',
   };
   const timings = {
@@ -57,11 +65,31 @@ const ZSProvider = (() => {
     const editor = getEditor();
     return editor && (editor.closest("form") || editor.parentElement);
   };
-  const barAnchor = () => composerFrame();
+  // The composer is BOTTOM-DOCKED: no ancestor's padding-top moves it (measured
+  // live - the form stayed pinned while every ancestor got 57px of padding), so
+  // the anchored mode's reserved strip can never reserve anything and the bar
+  // overlaps the placeholder + the site's own model/voice buttons. An in-flow
+  // mount is no better: inserting a foreign node into the composer's React
+  // parent sent Grok into a re-render loop (measured live - repeated 2-25s main
+  // thread stalls, the editor unmounted for good). So neither barMount nor
+  // barAnchor is exported and the core's float-above-the-editor fallback is
+  // used: a fixed panel hovering above the composer, no DOM insertion, no
+  // padding.
 
   function textWithout(root, excludeSel) {
     if (!root) return "";
-    const skip = [".zs-chip", excludeSel].filter(Boolean).join(",");
+    // The turn carries a visible-in-a11y-tree author label ("Grok") and action
+    // buttons; neither is the answer. Measured live: without this the reply read
+    // "Grok\nPONG". Deliberately narrow - a class-name guess like
+    // [class*="reasoning"] would also drop answer text on a redesign.
+    const skip = [
+      ".zs-chip",
+      '[aria-hidden="true"]',
+      ".sr-only",
+      '[class*="sr-only"]',
+      "button",
+      excludeSel,
+    ].filter(Boolean).join(",");
     let text = "";
     const walk = (node) => {
       if (node.nodeType === Node.TEXT_NODE) {
@@ -234,7 +262,14 @@ const ZSProvider = (() => {
   }
   const enforceComposer = () => ({ ready: !!getEditor() });
   async function ensureComposerReady(reason) {
-    const ready = !!getEditor();
+    // The shell paints before the tiptap composer mounts, and the core calls this
+    // once right after load. Waiting here is what stops a spurious "Grok mode not
+    // ready" on a fresh tab (same pattern as Rudder and Gemini).
+    let ready = !!getEditor();
+    if (!ready) {
+      diag("mode_ready.wait", { reason, provider: "grok" });
+      ready = await waitFor(() => !!getEditor(), 15000);
+    }
     diag("mode_ready", { reason, provider: "grok", ready });
     return { ready };
   }
@@ -248,7 +283,20 @@ const ZSProvider = (() => {
     if (getEditor() && document.querySelector('a[href*="/sign-in"],a[href*="/sign-up"]')) {
       return "Sign in to Grok to use Grok chat.";
     }
-    return getEditor() ? null : "The Grok input box is not available.";
+    // A site can re-create the composer for a beat right after a send (Grok
+    // rebuilds the tiptap node, Mistral the ProseMirror box). A missing editor
+    // mid-generation is churn, NOT an error - the same false "context_limit"
+    // failed the bootstrap every time (measured live 2026-11-15). Same rule as
+    // Rudder: ignore it while generating, and for a short grace window after.
+    const editor = getEditor();
+    if (!editor) {
+      if (isGenerating()) { missingEditorSince = 0; return null; }
+      if (!missingEditorSince) missingEditorSince = Date.now();
+      if (Date.now() - missingEditorSince < 4000) return null;
+      return "The Grok input box is not available.";
+    }
+    missingEditorSince = 0;
+    return null;
   }
   const isTooLongMsg = (text) => /conversation.{0,30}(too long|limit)|context.{0,20}limit/i.test(text);
   const isBusyMsg = (text) => /try again later|temporarily unavailable|rate limit|too many requests/i.test(text);
@@ -314,7 +362,7 @@ const ZSProvider = (() => {
     allItems, isUserItem, isAssistantItem, itemText, classifyText,
     assistantCount, userCount, lastAssistant, lastAssistantId, readAssistant,
     streamLen, snapshot,
-    getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barAnchor,
+    getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame,
     setInputLock, typeAndSend, stopGeneration,
     isGenerating, isBusyNow, isHardGenerating,
     enforceComposer, ensureComposerReady,

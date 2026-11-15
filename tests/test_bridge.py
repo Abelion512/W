@@ -526,6 +526,7 @@ class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
         await self._await_send(client)
         self.assertEqual(client.sent[0]["type"], "submit_prompt")
         self.assertEqual(client.sent[0]["prompt"], "hello")
+        self.assertEqual(client.sent[0]["metadata"], {})
         await manager._handle_request(
             client,
             {
@@ -537,6 +538,131 @@ class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(await asyncio.wait_for(task, 2), {"ok": True, "text": "world"})
+
+    async def test_submit_prompt_timeout_asks_the_tab_to_stop(self):
+        # A caller that gave up must not leave the web tab generating: the bridge
+        # cancels, so the tab can accept the next prompt without a page reload.
+        manager = bridge.Bridge()
+        client = FakeClient()
+        manager.clients.add(client)
+        result = await manager.submit_prompt("hello", 0.05)
+        self.assertFalse(result["ok"])
+        self.assertIn("did not answer", result["error"])
+        for _ in range(100):
+            if any(m["type"] == "cancel_prompt" for m in client.sent):
+                break
+            await asyncio.sleep(0.01)
+        cancel = [m for m in client.sent if m["type"] == "cancel_prompt"]
+        self.assertEqual(len(cancel), 1)
+        self.assertEqual(cancel[0]["id"], client.sent[0]["id"])
+
+    async def test_submit_prompt_carries_metadata(self):
+        manager = bridge.Bridge()
+        client = FakeClient()
+        manager.clients.add(client)
+        metadata = {"taskCategory": "debug", "modelTier": "balanced"}
+        task = asyncio.create_task(manager.submit_prompt("hello", 5, metadata))
+        await self._await_send(client)
+        self.assertEqual(client.sent[0]["metadata"], metadata)
+        await manager._handle_request(
+            client,
+            {
+                "id": 8,
+                "type": "prompt_result",
+                "prompt_id": client.sent[0]["id"],
+                "ok": True,
+                "text": "world",
+            },
+        )
+        self.assertEqual(await asyncio.wait_for(task, 2), {"ok": True, "text": "world"})
+
+    async def test_context_only_flag_does_not_leak_after_a_sandbox_failure(self):
+        # The flag tells the next tool call to be rejected while a context-only
+        # prompt is in flight. A prompt that fails BEFORE it is sent must not
+        # leave it set, or the following normal task would lose its tools.
+        manager = bridge.Bridge()
+        client = FakeClient()
+        manager.clients.add(client)
+        with patch.object(bridge, "ROOT", Path(tempfile.gettempdir())):
+            result = await manager.submit_prompt(
+                "hello", 5, {"contextOnly": True, "contextFiles": ["definitely-missing.txt"]}
+            )
+        self.assertFalse(result["ok"])
+        self.assertFalse(manager._context_only)
+        self.assertEqual(client.sent, [])
+
+    async def test_submit_prompt_prepends_context_sandbox(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "note.txt").write_text("sandboxed text", encoding="utf-8")
+            manager = bridge.Bridge()
+            client = FakeClient()
+            manager.clients.add(client)
+            with patch.object(bridge, "ROOT", root):
+                task = asyncio.create_task(
+                    manager.submit_prompt(
+                        "use the context", 5, {"contextFiles": ["note.txt"]}
+                    )
+                )
+                await self._await_send(client)
+        sent = client.sent[0]
+        self.assertIn("[CONTEXT SANDBOX]", sent["prompt"])
+        self.assertIn("sandboxed text", sent["prompt"])
+        self.assertEqual(sent["metadata"]["context"]["files"], ["note.txt"])
+        await manager._handle_request(
+            client,
+            {
+                "id": 9,
+                "type": "prompt_result",
+                "prompt_id": sent["id"],
+                "ok": True,
+                "text": "world",
+            },
+        )
+        self.assertEqual(await asyncio.wait_for(task, 2), {"ok": True, "text": "world"})
+
+    async def test_context_only_rejects_tool_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "note.txt").write_text("sandboxed text", encoding="utf-8")
+            manager = bridge.Bridge()
+            client = FakeClient()
+            manager.clients.add(client)
+            with patch.object(bridge, "ROOT", root):
+                task = asyncio.create_task(
+                    manager.submit_prompt(
+                        "summarize",
+                        5,
+                        {"contextFiles": ["note.txt"], "contextOnly": True},
+                    )
+                )
+                await self._await_send(client)
+        sent = client.sent[0]
+        self.assertIn("[TOOLS DISABLED]", sent["prompt"])
+        await manager._handle_request(
+            client,
+            {
+                "id": 10,
+                "type": "call_tool",
+                "name": "read_file",
+                "arguments": {"path": "README.md"},
+            },
+        )
+        rejection = [m for m in client.sent if m.get("type") == "tool_result"][-1]
+        self.assertFalse(rejection["ok"])
+        self.assertEqual(rejection["kind"], "context_only")
+        await manager._handle_request(
+            client,
+            {
+                "id": 11,
+                "type": "prompt_result",
+                "prompt_id": sent["id"],
+                "ok": True,
+                "text": "ok",
+            },
+        )
+        self.assertEqual(await asyncio.wait_for(task, 2), {"ok": True, "text": "ok"})
+        self.assertFalse(manager._context_only)
 
     async def test_submit_prompt_requires_extension(self):
         result = await bridge.Bridge().submit_prompt("hello", 1)

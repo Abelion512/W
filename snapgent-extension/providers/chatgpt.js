@@ -177,9 +177,12 @@ const ZSProvider = (() => {
   const turnAssistantBlocks = (item) => {
     if (!isTurnKeyItem(item)) return [];
     const inUser = (el) => !!el.closest('[class*="group/user-message"]');
-    const pres = [...item.querySelectorAll("pre")].filter(
-      (p) => !inUser(p) && /[{[]/.test(p.innerText || "")
-    );
+    // 2026-11 layout: a reply can render as a plain <pre> block with no
+    // .markdown anywhere in the turn. The old /[{[]/ content gate made a valid
+    // plain-text answer read as an empty reply (seen after a tool result).
+    // Excluding the user bubble is enough to keep the user's own code/template
+    // out of the answer.
+    const pres = [...item.querySelectorAll("pre")].filter((p) => !inUser(p));
     if (pres.length) return pres;
     // Shape B: plain text. Take the DEEPEST wrapper that still carries the
     // envelope, i.e. the one whose text starts at the payload.

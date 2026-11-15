@@ -7,6 +7,7 @@ const ZSProvider = (() => {
   "use strict";
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   let diag = () => {};
+  let missingEditorSince = 0;
   let locked = false;
   let lockedEditor = null;
 
@@ -34,6 +35,10 @@ const ZSProvider = (() => {
       'button[aria-label*="stop"]',
     ].join(","),
     thinking: '[data-testid*="thinking"],[class*="thinking"],[class*="reasoning"]',
+    // UI that lives INSIDE an assistant turn but is not the answer: the action
+    // bar (copy/retry, whose labels are private-use icon glyphs), the "just now"
+    // timestamp, and screen-reader-only live regions ("Claude responded:").
+    chrome: 'time,button,[role="button"],[aria-hidden="true"],.sr-only,[class*="sr-only"]',
     errors: '[role="alert"],[data-testid*="error"],[class*="error-message"]',
   };
 
@@ -48,7 +53,7 @@ const ZSProvider = (() => {
   const visible = (el) => !!el && el.isConnected && el.getClientRects().length > 0;
   const without = (root, excludeSel) => {
     if (!root) return "";
-    const skip = [".zs-chip", S.thinking, excludeSel].filter(Boolean).join(",");
+    const skip = [".zs-chip", S.thinking, S.chrome, excludeSel].filter(Boolean).join(",");
     let text = "";
     const visit = (node) => {
       if (node.nodeType === Node.TEXT_NODE) {
@@ -60,7 +65,8 @@ const ZSProvider = (() => {
       for (const child of node.childNodes) visit(child);
     };
     visit(root);
-    return text;
+    // Strip private-use glyphs (icon fonts) so callers never see them.
+    return text.replace(/[\uE000-\uF8FF]/g, "");
   };
 
   const isAssistantItem = (item) => !!item &&
@@ -113,13 +119,17 @@ const ZSProvider = (() => {
   const barMount = () => {
     const frame = composerFrame();
     // Mount ABOVE the whole composer card (outside it) so the bar never overlaps
-    // the editor's absolutely-positioned placeholder ("Reply"). The card is the
-    // nearest ancestor of the editor with a visible border and a large radius.
+    // the editor's placeholder row. The card is the nearest ancestor of the
+    // editor with a large radius or a border. The radius check must NOT require
+    // a border: the 2026-11 card (.bg-surface-3) is borderless at radius 14px,
+    // and with the border clause the walk stopped at an inner wrapper instead -
+    // the bar then mounted INSIDE the card and collided with the placeholder
+    // (measured live: "Ready." rendered under "How can I help you today?").
     let card = frame;
     const editor = getEditor();
     for (let el = editor, i = 0; el && el !== document.body && i < 12; el = el.parentElement, i++) {
       const cs = getComputedStyle(el);
-      if (parseFloat(cs.borderTopLeftRadius) >= 16 && parseFloat(cs.borderTopWidth) > 0) {
+      if (parseFloat(cs.borderTopLeftRadius) >= 14 || parseFloat(cs.borderTopWidth) > 0) {
         card = el;
         break;
       }
@@ -274,7 +284,20 @@ const ZSProvider = (() => {
     } catch (error) {
       diag("error.scanFailed", { message: String(error && error.message || error) });
     }
-    return getEditor() ? null : "The Claude input box is not available.";
+    // A site can re-create the composer for a beat right after a send (Grok
+    // rebuilds the tiptap node, Mistral the ProseMirror box). A missing editor
+    // mid-generation is churn, NOT an error - the same false "context_limit"
+    // failed the bootstrap every time (measured live 2026-11-15). Same rule as
+    // Rudder: ignore it while generating, and for a short grace window after.
+    const editor = getEditor();
+    if (!editor) {
+      if (isGenerating()) { missingEditorSince = 0; return null; }
+      if (!missingEditorSince) missingEditorSince = Date.now();
+      if (Date.now() - missingEditorSince < 4000) return null;
+      return "The Claude input box is not available.";
+    }
+    missingEditorSince = 0;
+    return null;
   }
   const isTooLongMsg = (text) => /conversation.{0,30}(too long|limit)|context.{0,20}limit/i.test(text);
   const isBusyMsg = (text) => /try again later|temporarily unavailable|rate limit|too many requests/i.test(text);

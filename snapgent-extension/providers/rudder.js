@@ -217,6 +217,12 @@ const ZSProvider = (() => {
   function writeText(editor, text) {
     if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
       editor.removeAttribute("readonly");
+      // The send control only MOUNTS once the site's own state holds text: a
+      // cold tab that got value+input alone showed Attach/Voice/Prompts and NO
+      // send button at all for 20s (measured live 2026-11-15), while the same
+      // write on a warm tab worked. Focus first and emit change too, so the
+      // controlled component cannot miss the update.
+      editor.focus();
       const prototype = editor instanceof HTMLTextAreaElement
         ? HTMLTextAreaElement.prototype
         : HTMLInputElement.prototype;
@@ -227,6 +233,7 @@ const ZSProvider = (() => {
         inputType: "insertText",
         data: text,
       }));
+      editor.dispatchEvent(new Event("change", { bubbles: true }));
       if (lockedEditor === editor) editor.setAttribute("readonly", "");
       return;
     }
@@ -274,11 +281,32 @@ const ZSProvider = (() => {
     const beforeUsers = userCount();
     const beforeAssistants = assistantCount();
     const wasHard = isHardGenerating();
-    writeText(editor, payload);
-    const ready = await waitFor(() => {
+    const sendReady = () => {
       const button = sendButton();
       return !!button && !button.disabled && button.getAttribute("aria-disabled") !== "true";
-    }, 12000);
+    };
+    writeText(editor, payload);
+    // diag: whether the site ACCEPTED the text is the whole ballgame here - it
+    // only mounts its Send control once its own state holds the message, so a
+    // write that silently bounced looks identical to a stuck button.
+    diag("send.wrote", { len: editorText().length });
+    // The cold page HYDRATES after first paint. A write that lands before the
+    // site's own state is live gets wiped by the next render, and then the Send
+    // control never mounts (measured live 2026-11-15: send.wrote len 0 twice on
+    // a fresh navigate, the same tab passed warm in 6s; ~1 cold run in 3). So
+    // write until the text STICKS. An empty composer here means nothing was
+    // sent, so re-writing cannot duplicate a message.
+    let ready = false;
+    for (let attempt = 0; attempt < 24 && !ready; attempt++) {
+      if (!editorText().trim()) {
+        writeText(editor, payload);
+        diag("send.rewrote", { attempt, len: editorText().length });
+        await sleep(600);
+        continue;
+      }
+      ready = await waitFor(sendReady, 4000);
+      if (!ready) await sleep(300);
+    }
     if (!ready) {
       if (authWall()) throw new Error("Sign in to Rudder to send messages.");
       throw new Error("Rudder send button did not become available");

@@ -549,6 +549,37 @@ const ZSProvider = (() => {
     el.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
+  // Meta's composer is Lexical. Writing the hidden mirror textarea still leaves
+  // its OWN state empty in the 2026-11 build (measured live: textarea.value set,
+  // 1465 chars, send button stayed disabled and no turn appeared), so type into
+  // the visible contenteditable instead and keep the mirror as a fallback.
+  function typeInto(editor, text) {
+    if (isValueEditor(editor)) {
+      setTextareaValue(editor, text);
+      return;
+    }
+    if (typeof editor.focus === "function") editor.focus();
+    const selection = window.getSelection && window.getSelection();
+    if (selection && document.createRange) {
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    const inserted = typeof document.execCommand === "function"
+      ? document.execCommand("insertText", false, text)
+      : false;
+    if (!inserted || !(editor.innerText || editor.textContent || "").includes(text.slice(0, 24))) {
+      editor.textContent = text;
+      // InputEvent is missing in the stub-DOM test runner and in old engines.
+      const makeInput = (type, extra) => (typeof InputEvent === "function"
+        ? new InputEvent(type, { bubbles: true, ...extra, data: text })
+        : new Event(type, { bubbles: true }));
+      editor.dispatchEvent(makeInput("beforeinput", { cancelable: true, inputType: "insertText" }));
+      editor.dispatchEvent(makeInput("input", { inputType: "insertText" }));
+    }
+  }
+
   async function typeAndSend(text, images) {
     // Images FIRST: staging swaps in the inline image; the mirror textarea still
     // drives the composed text alongside it. Idempotent across the core's up-to-4
@@ -561,12 +592,13 @@ const ZSProvider = (() => {
         diag("meta.tas.attached", { ok, imgId: images.__zsId });
       } catch (e) { diag("meta.tas.attachErr", { msg: String((e && e.message) || e) }); }
     }
-    // Write via the mirror textarea (the controlled input that drives Lexical).
-    const editor = writeEl();
+    // Type into the VISIBLE editor (the Lexical contenteditable); the mirror
+    // textarea is only a fallback for builds that expose nothing else.
+    const visible = getEditor();
+    const editor = visible && !isValueEditor(visible) ? visible : writeEl();
     if (!editor) throw new Error("Meta AI input box not found");
     const usersBeforeSend = userCount();
-    editor.focus();
-    setTextareaValue(editor, text);
+    typeInto(editor, text);
     const sendReady = () => {
       const b = sendButton();
       return !!b && !b.disabled && b.getAttribute("aria-disabled") !== "true";

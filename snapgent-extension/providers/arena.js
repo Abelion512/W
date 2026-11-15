@@ -452,8 +452,27 @@ const ZSProvider = (() => {
       const b = sendButton();
       return !!b && !b.disabled && b.getAttribute("aria-disabled") !== "true";
     };
-    const ready1 = await waitFor(sendReady, 60000);
+    // A text-only send needs a moment; the full minute exists for the A/B case
+    // where the SECOND candidate is still streaming. Measured live 2026-11-15: a
+    // WARM round right after a finished cold run sat disabled for minutes (the
+    // other candidate never settled), and the core's empty-reply retries kept
+    // re-entering this wait until the bridge timed out at 540s. So wait shorter
+    // without images, and when the site itself says it is still streaming, fail
+    // fast with that reason instead of burning the task budget.
+    const ready1 = await waitFor(sendReady, images && images.length ? 60000 : 20000);
     diag("arena.tas.ready", { ready: ready1 });
+    if (!ready1 && !(images && images.length)) {
+      // Do NOT fall through to the Enter-key retries: when Arena's own send
+      // button never enables on a text-only turn the tab is not going to accept
+      // the message, and the core's retries just burn the whole task budget
+      // (measured live 2026-11-15: 540s bridge timeout, then a second round of
+      // 20s waits). Fail with the reason instead.
+      throw new Error(
+        isHardGenerating()
+          ? "Arena is still generating its previous reply - retry once it settles."
+          : "Arena's send button never became available - reload the tab and retry."
+      );
+    }
     // Attach LAST, right before the send - see gemini.js for why. Guard against
     // the core's up-to-4 typeAndSend retries (same `images` array ref): skip when
     // this exact set was already staged (identity match), and drop any stale

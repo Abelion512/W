@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 # Handshake policy (Origin allowlist, per-install token, token file handling)
 # lives in bridge_auth.py; the names are re-exported here because bridge.py is the
 # entry point and the tests configure auth through this module.
+import context_sandbox
+
 from bridge_auth import (
     ALLOWED_ORIGIN_PREFIXES,
     AUTH_DISABLE_ENV,
@@ -396,6 +398,9 @@ class Bridge:
         # extension sockets.
         self._prompt_owner: Any = None
         self._last_client: Any = None
+        # While a context-only task runs, every tool call is rejected here so a
+        # model cannot reach files outside the context sandbox.
+        self._context_only = False
 
     def load_config(self) -> Dict[str, Dict[str, Any]]:
         if not CONFIG_PATH.exists():
@@ -666,11 +671,15 @@ class Bridge:
         self._pending_prompts.clear()
         self._prompt_owner = None
 
-    async def submit_prompt(self, prompt: str, timeout: float) -> Dict[str, Any]:
+    async def submit_prompt(
+        self, prompt: str, timeout: float, metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Delegate one prompt to the browser extension. Single-flight.
 
         The deadline covers the queue wait too: a second task that waits for the
         lock must not start a generation the caller has already given up on.
+        ``metadata`` is forwarded unchanged so the extension can route the task
+        (for example, model tier by task category).
         """
         if not isinstance(prompt, str) or not prompt.strip():
             return {"ok": False, "error": "Empty prompt."}
@@ -689,18 +698,84 @@ class Bridge:
                 if client is None:
                     return {"ok": False, "error": "No Snapgent extension is connected."}
             prompt_id = f"p{uuid.uuid4().hex}"
+            metadata = metadata if isinstance(metadata, dict) else {}
+            # Local until the prompt is actually sent: every early return below
+            # (sandbox failure, unreadable files) leaves the bridge without a
+            # pending prompt, so it must not leave the flag set for the NEXT
+            # task either.
+            context_only = bool(metadata.get("contextOnly"))
+            requested = metadata.get("contextFiles")
+            if isinstance(requested, list) and requested:
+                # Only the named files go to the web chat. The copy is kept on
+                # disk for audit; the prompt carries a bounded context block.
+                try:
+                    sandbox = await asyncio.to_thread(
+                        context_sandbox.prepare,
+                        requested,
+                        prompt_id,
+                        ROOT,
+                        Path(os.environ["ZS_CONTEXT_DIR"]).resolve()
+                        if os.environ.get("ZS_CONTEXT_DIR")
+                        else None,
+                    )
+                except Exception as error:  # noqa: BLE001 - surface any sandbox failure
+                    return {"ok": False, "error": f"Context sandbox failed: {error}"}
+                if not sandbox["files"]:
+                    return {
+                        "ok": False,
+                        "error": "Context sandbox: none of the requested files could be read.",
+                    }
+                note = (
+                    "[TOOLS DISABLED] This task is context-only: every tool call is "
+                    "rejected. Work only from the context below.\n\n"
+                    if metadata.get("contextOnly")
+                    else ""
+                )
+                prompt = note + sandbox["context"] + "\n\n" + prompt
+                metadata = {
+                    **metadata,
+                    "context": {
+                        "root": sandbox["root"],
+                        "files": sandbox["files"],
+                        "bytes": sandbox["bytes"],
+                        "skipped": sandbox["skipped"],
+                    },
+                }
+            elif context_only:
+                prompt = (
+                    "[TOOLS DISABLED] This task is context-only: every tool call is "
+                    "rejected.\n\n"
+                ) + prompt
             future: asyncio.Future = loop.create_future()
+            self._context_only = context_only
             self._pending_prompts[prompt_id] = future
             self._prompt_owner = client
             try:
-                sent = await self._send_client(client, {"type": "submit_prompt", "id": prompt_id, "prompt": prompt})
+                sent = await self._send_client(
+                    client,
+                    {
+                        "type": "submit_prompt",
+                        "id": prompt_id,
+                        "prompt": prompt,
+                        "metadata": metadata or {},
+                    },
+                )
                 if not sent:
                     return {"ok": False, "error": "The Snapgent extension disconnected before the prompt could be delivered."}
                 return await asyncio.wait_for(future, remaining)
             except asyncio.TimeoutError:
+                # Tell the tab to stop generating. Without this the web AI keeps
+                # streaming after the caller has given up, and the tab refuses
+                # every later prompt until someone reloads the page by hand.
+                try:
+                    await self._send_client(client, {"type": "cancel_prompt", "id": prompt_id})
+                    log(f"prompt {prompt_id} timed out; asked the extension to stop")
+                except Exception:  # noqa: BLE001 - the deadline is what matters
+                    pass
                 return timed_out
             finally:
                 self._pending_prompts.pop(prompt_id, None)
+                self._context_only = False
                 if self._prompt_owner is client:
                     self._prompt_owner = None
 
@@ -847,6 +922,18 @@ class Bridge:
             await self._send_client(
                 websocket,
                 {"type": "tool_result", "id": request_id, "ok": False, "error": "Invalid tool call."},
+            )
+            return
+        if self._context_only:
+            await self._send_client(
+                websocket,
+                {
+                    "type": "tool_result",
+                    "id": request_id,
+                    "ok": False,
+                    "kind": "context_only",
+                    "error": "This task is context-only; tool calls are disabled. Use the provided context.",
+                },
             )
             return
         try:
@@ -1078,8 +1165,14 @@ def build_a2a_server(bridge: "Bridge", loop: asyncio.AbstractEventLoop) -> Any:
             # Path only, never the value: bridge_debug.log is world-readable.
             log(f"A2A token created at {a2a_token_path()}")
 
-    def submit(prompt: str, task_timeout: float) -> Dict[str, Any]:
-        future = asyncio.run_coroutine_threadsafe(bridge.submit_prompt(prompt, task_timeout), loop)
+    def submit(
+        prompt: str,
+        task_timeout: float,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        future = asyncio.run_coroutine_threadsafe(
+            bridge.submit_prompt(prompt, task_timeout, metadata), loop
+        )
         try:
             return future.result(task_timeout + 60)
         except concurrent.futures.TimeoutError:

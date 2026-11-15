@@ -32,12 +32,18 @@ const editor = Object.assign(new StubTextArea(), {
   dispatchEvent() {},
   getClientRects() { return [{ width: 300, height: 30 }]; },
 });
+// The Lexical contenteditable: this is where text has to land now (the hidden
+// mirror textarea no longer drives the composer's send state).
 const visibleEditor = {
   tagName: "DIV",
   offsetParent: {},
+  textContent: "",
+  get innerText() { return this.textContent; },
   closest() { return null; },
   querySelector() { return null; },
   getClientRects() { return [{ width: 300, height: 30 }]; },
+  focus() {},
+  dispatchEvent() {},
   setAttribute() {},
 };
 let stopButton = null;
@@ -84,7 +90,10 @@ const provider = new Function(
 
   await provider.typeAndSend("startup prompt");
 
-  assert.strictEqual(editor.value, "startup prompt", "Meta may retain the submitted mirror value");
+  assert.strictEqual(visibleEditor.textContent, "startup prompt",
+    "text is typed into the visible Lexical editor");
+  assert.strictEqual(editor.value, "",
+    "the hidden mirror textarea is only a fallback, not the write target");
   assert.ok(stopButton, "Meta exposes its generation control");
   provider.setInputLock(false);
 

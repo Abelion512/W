@@ -26,6 +26,87 @@ const AUTH_STATE_KEY = "bridgeAuthRequired";
 // manifest.json content_scripts + host_permissions) when integrating another AI.
 const PROVIDER_URLS = ["https://chat.deepseek.com/*", "https://chatgpt.com/*", "https://chat.openai.com/*", "https://claude.ai/*", "https://gemini.google.com/*", "https://www.kimi.ai/*", "https://kimi.ai/*", "https://chat.z.ai/*", "https://chat.qwen.ai/*", "https://arena.ai/*", "https://www.meta.ai/*", "https://meta.ai/*", "https://ptero.pro/*", "https://grok.com/*", "https://chat.mistral.ai/*", "https://rudder.chat/*"];
 
+// Task category -> model tier -> provider preference. The A2A client declares
+// the category in metadata; model names stay out of here so a provider renaming
+// its model does not need a code change. See docs/model-routing.md.
+const CATEGORY_TIER = {
+  extract: "light",
+  summarize: "light",
+  classify: "light",
+  "code-edit": "balanced",
+  debug: "balanced",
+  review: "deep",
+  architecture: "deep",
+  security: "deep",
+};
+// Preference order inside each tier: the first provider with an open tab wins.
+// The ladder reflects real account limits (Claude 5h window, Kimi often busy,
+// Gemini 1M context but weakest multi-step), so this is a fallback order, not a
+// ranking to optimise. See docs/model-routing.md.
+const TIER_PROVIDERS = {
+  light: ["deepseek", "gemini", "qwen", "glm", "mistral", "rudder"],
+  balanced: ["deepseek", "gemini", "grok", "qwen", "glm", "kimi"],
+  deep: ["claude", "chatgpt", "kimi"],
+};
+// A category may pin a short list when one site is clearly better regardless of
+// tier: live information needs a search-first model, plain chat should not burn
+// a frontier quota, and planning is ChatGPT's orchestrator job.
+const CATEGORY_PROVIDERS = {
+  realtime: ["grok", "chatgpt", "gemini"],
+  chat: ["rudder", "mistral", "gemini"],
+  orchestrate: ["chatgpt", "claude", "kimi"],
+};
+// Declared complexity beats the category default when both are present.
+const COMPLEXITY_TIER = { low: "light", medium: "balanced", high: "deep" };
+const PROVIDER_HOSTS = {
+  deepseek: ["chat.deepseek.com"],
+  gemini: ["gemini.google.com"],
+  chatgpt: ["chatgpt.com", "chat.openai.com"],
+  claude: ["claude.ai"],
+  kimi: ["kimi.ai"],
+  glm: ["chat.z.ai"],
+  qwen: ["chat.qwen.ai"],
+  arena: ["arena.ai"],
+  meta: ["meta.ai"],
+  grok: ["grok.com"],
+  mistral: ["chat.mistral.ai"],
+  rudder: ["rudder.chat"],
+  // Non-text providers: no tab is ever routed here by a text task.
+  ptero: ["ptero.pro"],
+  manus: ["manus.im"],
+};
+
+function routeFor(metadata) {
+  const m = metadata && typeof metadata === "object" ? metadata : {};
+  // Explicit pin first: one provider, no fallback chain. Used by callers that
+  // need a specific site (an A/B comparison, or a provider the harness knows is
+  // free), and by the live test harness to reach each provider in turn.
+  const pinned = String(m.provider || "").toLowerCase();
+  if (PROVIDER_HOSTS[pinned]) return { tier: "pinned", providers: [pinned] };
+  const tier = String(m.modelTier || "").toLowerCase();
+  if (TIER_PROVIDERS[tier]) return { tier, providers: TIER_PROVIDERS[tier] };
+  const category = String(m.taskCategory || "").toLowerCase();
+  if (CATEGORY_PROVIDERS[category]) {
+    return { tier: CATEGORY_TIER[category] || "balanced", providers: CATEGORY_PROVIDERS[category] };
+  }
+  const complexity = String(m.complexity || "").toLowerCase();
+  const derived = COMPLEXITY_TIER[complexity] || CATEGORY_TIER[category];
+  if (derived) return { tier: derived, providers: TIER_PROVIDERS[derived] };
+  return null;
+}
+
+// The only place a provider tab is chosen from a route. Returns null when no
+// preferred provider is open so the caller can fall back to today's behaviour.
+function tabForRoute(tabs, route) {
+  if (!route) return null;
+  for (const provider of route.providers) {
+    const hosts = PROVIDER_HOSTS[provider] || [];
+    const hit = tabs.find((t) => hosts.some((h) => String(t.url || "").includes(h)));
+    if (hit) return hit;
+  }
+  return null;
+}
+
 const RECONNECT_MIN = 1000;
 const RECONNECT_MAX = 5000;
 const HEARTBEAT_MS = 10000;
@@ -98,9 +179,11 @@ function readBridgeToken() {
 // it: a worker wake-up can deliver a message (the tabs poll `status` every 5 s)
 // before the storage read resolves, and without this the handler would see the
 // default `authRequired = false` and redial a bridge that already refused us.
+let lastUsage = null;
 const authReady = new Promise((resolve) => {
-  chrome.storage.local.get(AUTH_STATE_KEY, (stored) => {
+  chrome.storage.local.get([AUTH_STATE_KEY, "lastUsage"], (stored) => {
     authRequired = !!(stored && stored[AUTH_STATE_KEY]);
+    lastUsage = (stored && stored.lastUsage) || null;
     resolve();
   });
 });
@@ -340,6 +423,12 @@ function handleBridgeMessage(msg) {
     handleSubmitPrompt(msg);
     return;
   }
+  if (msg.type === "cancel_prompt") {
+    // The bridge hit its deadline. Tell the tab to stop generating, otherwise
+    // the tab stays busy and refuses every later prompt until it is reloaded.
+    cancelPrompt(msg.id);
+    return;
+  }
   if (msg.type === "prompt_ack") {
     // Ack of OUR prompt_result send: clear its pending entry now instead of
     // waiting out the 15s request timeout.
@@ -410,33 +499,66 @@ function handleBridgeMessage(msg) {
 // Relay a bridge prompt to the active provider tab. Fire-and-forget: the
 // content script answers later via an "a2a_result" runtime message. An MV3
 // worker eviction between the two hops is expected and handled by reconnect.
+// promptId → tabId, so a bridge-side timeout can reach the right tab. Bounded:
+// a result or a cancel removes the entry, and stale ones expire.
+const promptTabs = new Map();
+function cancelPrompt(promptId) {
+  const tabId = promptTabs.get(promptId);
+  promptTabs.delete(promptId);
+  if (typeof tabId !== "number") return;
+  try {
+    chrome.tabs.sendMessage(tabId, { type: "zs-a2a-abort", promptId }, () => void chrome.runtime.lastError);
+  } catch { /* tab is gone; nothing to cancel */ }
+}
+
 async function handleSubmitPrompt(msg) {
   const promptId = msg.id;
-  const reply = (payload) =>
-    send({ type: "prompt_result", prompt_id: promptId, ok: !!payload.ok,
-           text: payload.text || "", error: payload.error || "" }, 15000);
+  const reply = (payload) => {
+    promptTabs.delete(promptId);
+    return send({ type: "prompt_result", prompt_id: promptId, ok: !!payload.ok,
+                  text: payload.text || "", error: payload.error || "" }, 15000);
+  };
   try {
-    let tabs = await chrome.tabs.query({ url: PROVIDER_URLS, active: true, lastFocusedWindow: true });
-    if (!tabs.length) tabs = await chrome.tabs.query({ url: PROVIDER_URLS });
-    const tab = tabs.find((t) => t.active) || tabs[0];
+    const route = routeFor(msg.metadata);
+    let tabs;
+    let tab;
+    if (route) {
+      tabs = await chrome.tabs.query({ url: PROVIDER_URLS });
+      tab = tabForRoute(tabs, route);
+    }
+    if (!tab) {
+      tabs = await chrome.tabs.query({ url: PROVIDER_URLS, active: true, lastFocusedWindow: true });
+      if (!tabs.length) tabs = await chrome.tabs.query({ url: PROVIDER_URLS });
+      tab = tabs.find((t) => t.active) || tabs[0];
+    }
     if (!tab) { await reply({ ok: false, error: "No AI chat tab is open." }); return; }
-    try {
-      // Callback form, never awaited: the content script answers LATER via an
-      // "a2a_result" runtime message, so the channel closing is expected — not a
-      // failure. Only "no receiver" is a real error, and it must not race the
-      // content script's own reply.
-      chrome.tabs.sendMessage(
-        tab.id,
-        { type: "zs-a2a-prompt", prompt: msg.prompt, promptId },
-        () => {
-          const err = chrome.runtime.lastError;
-          if (err && /Receiving end|Could not establish/i.test(err.message || "")) {
-            reply({ ok: false, error: "No Snapgent content script in the AI chat tab. Reload it." });
-          }
-        }
-      );
-    } catch (e) {
-      reply({ ok: false, error: "The AI chat tab did not accept the prompt." });
+    promptTabs.set(promptId, tab.id);
+    setUsage({ provider: providerOf(tab.url), effort: route ? route.tier : "auto", tokens: null, seconds: null, ok: null, started: Date.now() });
+    // A tab that was JUST navigated races the content script's MV3 injection:
+    // the first sendMessage can fail with "Receiving end does not exist" even
+    // though the script lands a beat later (measured live: Claude after reload).
+    // Retry briefly before declaring the tab dead.
+    const trySend = () => new Promise((resolve, reject) => {
+      // Callback form: the content script answers LATER via an "a2a_result"
+      // runtime message, so the channel closing is expected — not a failure
+      // ("message port closed" resolves null and must NOT produce a reply).
+      // Only "no receiver" is a real error, and it must not race the content
+      // script's own reply.
+      try {
+        chrome.tabs.sendMessage(tab.id, { type: "zs-a2a-prompt", prompt: msg.prompt, promptId, route: route ? route.tier : null },
+          () => resolve(chrome.runtime.lastError || null));
+      } catch (e) {
+        reject(e);
+      }
+    });
+    let err = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt) await new Promise((resolve) => setTimeout(resolve, 1200));
+      err = await trySend();
+      if (!err || !/Receiving end|Could not establish/i.test(err.message || "")) break;
+    }
+    if (err && /Receiving end|Could not establish/i.test(err.message || "")) {
+      await reply({ ok: false, error: "No Snapgent content script in the AI chat tab. Reload it." });
     }
   } catch (e) {
     await reply({ ok: false, error: String((e && e.message) || e) });
@@ -460,8 +582,23 @@ function failAllPending(reason) {
 }
 
 // ── status push to any open DeepSeek tab + popup ─────────────────────────
+// Last A2A task, so the popup can show which model ran, at what effort, for how
+// many tokens and how long. Kept in storage because the MV3 worker is evicted.
+// (`lastUsage` itself is declared with the other worker state, above authReady.)
+function setUsage(patch) {
+  lastUsage = { ...(lastUsage || {}), ...patch, at: Date.now() };
+  try { chrome.storage.local.set({ lastUsage }).catch(() => {}); } catch {}
+  broadcastStatus();
+}
+function providerOf(url) {
+  for (const [name, hosts] of Object.entries(PROVIDER_HOSTS)) {
+    if (hosts.some((h) => String(url || "").includes(h))) return name;
+  }
+  return "";
+}
+
 function statusObj() {
-  return { type: "zs-status", connected, authRequired, rotatingToken, savedToken: !!bridgeToken, mcpAlive, bridgeVersion, bridgeStatus: bridgeStatusCache, studio: studioConnected, studioApp, studioProc, tools: toolsCache.length, servers: serversCache };
+  return { type: "zs-status", connected, authRequired, rotatingToken, savedToken: !!bridgeToken, mcpAlive, bridgeVersion, bridgeStatus: bridgeStatusCache, studio: studioConnected, studioApp, studioProc, tools: toolsCache.length, servers: serversCache, usage: lastUsage };
 }
 
 function broadcastStatus() {
@@ -540,6 +677,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         break;
       }
       case "a2a_result": {
+        promptTabs.delete(msg.promptId);
+        setUsage({
+          tokens: typeof msg.tokens === "number" ? msg.tokens : null,
+          seconds: lastUsage && lastUsage.started
+            ? Math.round((Date.now() - lastUsage.started) / 1000) : null,
+          ok: !!msg.ok,
+          error: msg.ok ? "" : String(msg.error || "").slice(0, 120),
+        });
         await send({ type: "prompt_result", prompt_id: msg.promptId,
                      ok: !!msg.ok, text: msg.text || "", error: msg.error || "" }, 15000);
         sendResponse({ ok: true });
