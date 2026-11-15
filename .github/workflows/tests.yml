@@ -66,6 +66,7 @@ jobs:
           node snapgent-extension/test-pairing.js
           node snapgent-extension/test-reconnect.js
           node snapgent-extension/test-rudder.js
+          node snapgent-extension/test-grok-editor.js
           node snapgent-extension/test-a2a.js
 
   e2e:

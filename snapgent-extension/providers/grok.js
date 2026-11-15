@@ -18,23 +18,46 @@ const ZSProvider = (() => {
     assistant: '[data-message-author-role="assistant"],[data-testid*="assistant-message"],[data-testid*="assistant-turn"],[data-testid*="conversation-turn"][data-role="assistant"]',
     // 2026-11 composer is a tiptap/ProseMirror div with no role and no aria-label
     // (measured live), so the role-based selectors alone left mode_ready false and
-    // every start failed with "Grok mode not ready". The bare `textarea` at the
-    // end is the HOME composer (grok.com/ before any thread opens): a plain
-    // textarea with no class, placeholder or role - without it a cold start from
-    // the site root never found an editor at all. Put last so the richer
-    // thread-view selectors win on a conversation page.
+    // every start failed with "Grok mode not ready". The bare `textarea` is there
+    // for the HOME composer (grok.com/ before any thread opens).
+    //
+    // Selector order buys NOTHING here: querySelectorAll returns DOCUMENT order,
+    // and the page carries a hidden mirror `<textarea>` (0px tall,
+    // visibility:hidden, tabindex=-1) that the real composer replaces at some
+    // point after load. When the mirror came first, this list handed back the
+    // mirror, writeText() typed into it, the tiptap div stayed empty and the run
+    // died with "Grok send button did not become available" (measured live
+    // 2026-11-15, diag `start.noToolCall {kind:"empty",textLen:0}`). Selection is
+    // therefore by box, not by order - see getEditor().
     editor: '[contenteditable="true"][role="combobox"][aria-label*="Grok" i],[contenteditable="true"][role="combobox"][aria-label*="Ask" i],#chat, textarea[placeholder*="Message" i], [contenteditable="true"][role="textbox"],.tiptap[contenteditable="true"],.ProseMirror[contenteditable="true"],textarea',
-    errors: '[role="alert"],[data-testid*="error"],[class*="error-message"]',
+    // `usage-limit-notice` is how grok.com says "Free tier limit reached"
+    // (measured live 2026-11-15: a role=status div with that testid, and it
+    // matches NONE of the error selectors). Without it the harness sat through
+    // the whole warmup window on a prompt the account was never going to get an
+    // answer for, instead of reporting the block.
+    errors: '[data-testid="usage-limit-notice"],[role="alert"],[data-testid*="error"],[class*="error-message"]',
   };
   const timings = {
     GEN_IDLE_MS: 2000,
     REASON_IDLE_MS: 15000,
-    WARMUP_MS: 60000,
+    // A COLD grok.com tab takes ~100-120s to answer its first turn (measured
+    // live 2026-11-15: prompt accepted at 14:41:17, reply bubble only at ~14:43),
+    // while a warm tab answers in 5-35s. The old 60s window declared that cold
+    // turn "empty" ~20s before the text existed, so a healthy send failed the
+    // session start. Warm turns never wait this long - any reply ends the wait.
+    WARMUP_MS: 150000,
     REASON_NOREPLY_MS: 120000,
     STABLE_MS: 10000,
     RESPONSE_TIMEOUT_MS: 300000,
   };
   const visible = (el) => !!el && el.isConnected && el.getClientRects().length > 0;
+  // A box, not just a rect: getClientRects() is non-empty for a 0px-high,
+  // visibility:hidden element, which is exactly what the composer's mirror is.
+  const hasBox = (el) => {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
   const excluded = (el) => !el.closest("#zs-root");
   const isUserItem = (item) => !!item && item.matches(S.user);
   const isAssistantItem = (item) => !!item && item.matches(S.assistant);
@@ -48,10 +71,13 @@ const ZSProvider = (() => {
     return items.length ? items[items.length - 1] : null;
   };
 
+  // Prefer the candidate that actually occupies space; a zero-height mirror is
+  // never the composer. If nothing has a box yet, report no editor so
+  // ensureComposerReady() keeps waiting instead of typing into a ghost.
   function getEditor() {
-    if (visible(lockedEditor) && excluded(lockedEditor)) return lockedEditor;
+    if (visible(lockedEditor) && hasBox(lockedEditor) && excluded(lockedEditor)) return lockedEditor;
     for (const editor of document.querySelectorAll(S.editor)) {
-      if (excluded(editor) && visible(editor)) return editor;
+      if (excluded(editor) && visible(editor) && hasBox(editor)) return editor;
     }
     return null;
   }
@@ -59,7 +85,13 @@ const ZSProvider = (() => {
     const editor = getEditor();
     return editor ? ("value" in editor ? editor.value : editor.innerText || editor.textContent || "") : "";
   };
-  const chatIsEmpty = () => allItems().length === 0;
+  // A COLD tab lands on /c/<id>: the site is restoring that thread and its turns
+  // mount a beat after the composer does. Trusting the (still empty) DOM there
+  // made the harness send its opening prompt into a thread that then re-rendered
+  // and swallowed it - diag showed assistantCount 0 for 150s while 4 restored
+  // user turns appeared behind it (measured live 2026-11-15). The path is the
+  // reliable signal: /c/<id> means "this chat has messages", even mid-load.
+  const chatIsEmpty = () => allItems().length === 0 && !/^\/c\//.test(location.pathname);
   const isFreshChat = () => chatIsEmpty() && !!getEditor();
   const composerFrame = () => {
     const editor = getEditor();

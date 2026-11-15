@@ -324,6 +324,61 @@ What this round fixed and where it is visible in the diagnostics (`#zs-diag-log`
 The quota blocks are the provider refusing the account, not the harness: the
 same tabs answer again once the limit resets.
 
+## Live verification (2026-11-15, second run)
+
+Same script, `--rounds 1` (one COLD + one WARM pass per provider) after the
+bar-seating fix and the token refactor landed. Providers were run in batches of
+four and their tabs closed between batches, to keep a 7.6 GB machine from
+swapping; the numbers are still one pinned prompt per provider through the real
+A2A facade.
+
+| Provider | Cold | Warm | Result |
+| --- | --- | --- | --- |
+| claude | 73.9s | 7.2s | `PONG` |
+| gemini | 19.2s | 14.4s | `PONG` |
+| deepseek | 20.8s | 6.4s | `PONG` |
+| chatgpt | 46.8s | 12.8s | `PONG` (first attempt refused: the tab was an old conversation; closed it, then pass) |
+| glm | 33.1s | 9.7s | `PONG` |
+| kimi | 31.2s | 11.9s | `PONG` |
+| mistral | 103.4s | 35.2s | `PONG` |
+| meta | 31.1s | 4.8s | `PONG` |
+| qwen | 41.4s | 6.8s | `PONG` — the earlier daily-limit block has reset |
+| arena | 30.0s | 7.4s | `PONG` (Battle-mode restore fix holds) |
+| rudder | 27.3s | 9.2s | `PONG` |
+| grok | 10.5s | - | **BLOCKED**: "Free tier limit reached" (was a real FAIL earlier in the day, see below) |
+
+Grok, in detail. Three separate problems, all found on the live site and all
+fixed; the account's own limit is what stops a PASS right now.
+
+1. **Prompt never reached the editor** (the real regression).
+
+   `Grok send button did not become available` on the first pair of rounds, then
+   `Could not start a Snapgent session in this chat` on the retry.
+   Diagnostics ended at `start.noToolCall {"kind":"empty","textLen":0}`. The
+   composer is a `div.tiptap.ProseMirror` **plus** a hidden 0px mirror
+   `textarea`, and `querySelectorAll` returns document order (not selector
+   order), so the provider picked the mirror and typed the prompt into a ghost.
+   `getEditor()` now requires a real box. Writing to the tiptap div verifies
+   directly (`execCommand=true`, `<p>PONG</p>`, Send enables).
+2. **Cold start sent into a restoring thread.** A cold tab lands on `/c/<id>`
+   while the restored turns mount a beat later, so `chatIsEmpty()` was true and
+   the opening prompt went into that thread as it re-rendered (`base: 0`, then 4
+   restored user turns appeared). `chatIsEmpty()` now treats `/c/<id>` as a chat
+   with messages, and the warmup window is 150s (a cold reply measured ~100-120s,
+   the old 60s declared it empty ~20s before the text existed).
+3. **Its quota banner was invisible to the harness**, which waited out the whole
+   window instead of reporting the block. The site's
+   `[data-testid="usage-limit-notice"]` is now part of the error scan, and
+   startSession's reason is carried into the A2A error, so the matrix reports
+   BLOCKED in ~10s with the site's own words.
+
+The write fix is proven by the warm round that ran before the limit hit
+(`PASS grok 33.2s`); a cold PASS still needs the account's limit to reset.
+
+Every other provider passes cold and warm, including the two that were blocked
+earlier today (qwen, and grok's own quota message). The quota-aware skip did not
+fire this time because no site answered with a limit message.
+
 ## In-page bar placement (2026-11-15)
 
 Measured live on each site with the bar's own geometry (`#zs-bar` rect against the

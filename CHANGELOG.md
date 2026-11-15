@@ -5,6 +5,21 @@ All notable changes to snapgentV3 Free are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **Grok's prompt reaches the composer again.** grok.com keeps a hidden mirror
+  `<textarea>` (0px tall) beside the real tiptap editor, and `querySelectorAll`
+  returns *document* order, so selector order never helped: the prompt was typed
+  into the mirror, the editor stayed empty and every start died with "Grok send
+  button did not become available" (`start.noToolCall {textLen:0}`). The editor is
+  now chosen by box size, and the cold-start restore is handled too - a tab on
+  `/c/<id>` counts as "has messages" even before its turns mount, so the opening
+  prompt no longer lands in a thread that re-renders under it. A cold reply got a
+  150s warmup window (measured ~100-120s) instead of 60s. Added
+  `snapgent-extension/test-grok-editor.js` to CI.
+- **A refused session now reports the site's own reason.** startSession's failure
+  text (e.g. Grok's "Free tier limit reached", read from its
+  `usage-limit-notice`) is carried into the A2A error, so a quota block is
+  reported as a block instead of 90s of waiting and a bare "could not start a
+  session".
 - **The in-page bar reads as part of the composer.** On Claude and Gemini it was
   a translucent card with its own radius and an 8px gap above the input, i.e. a
   second widget stacked on the composer; it is now a flat, flush row. On Grok,
@@ -99,6 +114,16 @@ All notable changes to snapgentV3 Free are documented here.
   because the bridge cannot tell one local process from another. The old rule is
   still available as `ZS_BRIDGE_AUTH=strict`. Pairing instructions in `README.md`,
   `docs/linux-stability.md` and `docs/security-and-ops.md` were rewritten to match.
+- **The in-page bar draws from one design scale.** Radius, spacing, type and the
+  32px control height are now steps of a single token set (`--zs-sp-*`,
+  `--zs-r-*`, `--zs-text-*`) declared once instead of ~90 literal values spread
+  across the bar, its menus and its controls. A provider that needs a wider inset
+  or a lighter weight re-points a token (`--zs-bar-inset`, `--zs-weight-strong`)
+  rather than adding its own pixels, so seating a new site cannot drift into 7px
+  here and 9px there. The scale is declared on `:root` because inline mode moves
+  the bar into the host's composer, outside `#zs-root`. Off-grid legacy values
+  moved to the nearest step, so nothing on the bar shifted by more than 1px, and
+  every control on the bar is now capped to one control height.
 - **The A2A bearer token is kept in a file** (`~/.snapgent/a2a_token`, mode `600`,
   reused across restarts) instead of only being printed, so a local agent reads it
   rather than copying the value out of the bridge window. `ZS_A2A_TOKEN` still pins

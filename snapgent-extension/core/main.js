@@ -210,6 +210,11 @@
     lastGenAt: 0,
     started: false,
     starting: false,
+    // Why the last bootstrap refused the session (set by startSession, read by
+    // runA2APrompt). Without it an A2A caller got the bare "could not start a
+    // session" with no reason, so a site's own "Free tier limit reached" never
+    // reached the matrix and a limit looked like a broken provider.
+    lastStartFailure: "",
     // The conversation a bootstrap belongs to + a generation counter. If the user
     // navigates to another chat mid/post-bootstrap, syncSessionState bumps the
     // counter (invalidating the in-flight startSession) and clears `starting`, so
@@ -2155,6 +2160,7 @@
       return;
     }
     A.userStopped = false;
+    A.lastStartFailure = "";
     A.stop = false;               // clear any halt left by a prior aborted bootstrap
     // Snapshot any turn already on screen at session start (normally none on a
     // clean new chat; on a reload-restored generation it's the stray turn). The
@@ -2212,6 +2218,7 @@
       const modeState = await P.ensureComposerReady("startup");
       if (!alive()) return;
       if (!modeState.ready) {
+        A.lastStartFailure = `${P.displayName} mode not ready`;
         ui.banner("warn", `${P.displayName} mode not ready`,
           `Try a new chat or reload.`);
         return;
@@ -2257,6 +2264,7 @@
         // bar on a false "Active" with no agent behind it, so say what happened
         // and keep Start available.
         diag("start.noToolCall", { kind: startRes.kind });
+        A.lastStartFailure = FALLBACK_TURN_TEXT;
         ui.banner("warn", "Start did not complete", FALLBACK_TURN_TEXT);
         return; // do NOT mark the session ready
       } else if (startRes.kind !== "tool") {
@@ -2277,6 +2285,9 @@
           context_limit: "conversation hit the context limit",
           too_long: "the message was too long for the site",
         }[kind] || `unexpected reply kind "${kind}"`;
+        // Carry the site's own words (a quota banner, a length refusal) plus the
+        // plain-English reason, so an A2A caller learns WHY it failed.
+        A.lastStartFailure = startRes.detail ? `${startRes.detail} (${why})` : why;
         ui.banner("warn", "Start did not complete", why);
         return; // do NOT mark the session ready - "Start" must stay available
       }
@@ -2285,6 +2296,7 @@
       ui.setStarted(true);
       ui.toast(`Agent on.`);
     } catch (e) {
+      A.lastStartFailure = String((e && e.message) || e);
       if (alive()) ui.banner("warn", "Startup failed", String((e && e.message) || e));
     } finally {
       // Only tear down our OWN starting state. If we were superseded (the user
@@ -4815,7 +4827,10 @@
             await new Promise((resolve) => setTimeout(resolve, 2000));
             await startSession();
           }
-          if (!A.started) throw new Error("Could not start a Snapgent session in this chat.");
+          if (!A.started) {
+            throw new Error("Could not start a Snapgent session in this chat." +
+              (A.lastStartFailure ? ` ${A.lastStartFailure}` : ""));
+          }
         }
         const base = await submitAndGetBase(prompt);
         await agentLoop(base);          // returns when no tool call is pending
