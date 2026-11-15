@@ -2,7 +2,7 @@
 
 All notable changes to snapgentV3 Free are documented here.
 
-## [Unreleased]
+## [V3.10.0] - 2026-11-16
 
 ### Fixed
 - **Grok's prompt reaches the composer again.** grok.com keeps a hidden mirror
@@ -106,6 +106,11 @@ All notable changes to snapgentV3 Free are documented here.
   and `test-popup-status.js`. One pre-existing unused import removed.
 
 ### Changed
+- **Dependencies tracked and bumped.** Dependabot now watches pip, npm and GitHub
+  Actions (`.github/dependabot.yml`), and the bumps it opened were merged:
+  `websockets` 16 → 17.4 (17.4 on Python ≥3.10, 15.0.1 below), `pytest` ≥9.2,
+  `pyflakes` ≥4.1, `electron` 33 → 45 in `snapgent-app`, the `actions` group in
+  `tests.yml`, and the npm-and-yarn group (Electron-Builder and its tree).
 - **Pairing needs no copy-paste.** The bridge now accepts a browser extension on the
   Origin allowlist alone, so the popup connects on its own instead of asking for the
   per-install token. A web page still cannot reach the bridge (it cannot forge a
@@ -124,6 +129,8 @@ All notable changes to snapgentV3 Free are documented here.
   the bar into the host's composer, outside `#zs-root`. Off-grid legacy values
   moved to the nearest step, so nothing on the bar shifted by more than 1px, and
   every control on the bar is now capped to one control height.
+- **Extension version is now 3.10.0** (the Snapgent App stays 0.1.1, the bridge
+  stays 3.9.4). Reload the unpacked extension so the popup shows `ext v3.10.0`.
 - **The A2A bearer token is kept in a file** (`~/.snapgent/a2a_token`, mode `600`,
   reused across restarts) instead of only being printed, so a local agent reads it
   rather than copying the value out of the bridge window. `ZS_A2A_TOKEN` still pins
