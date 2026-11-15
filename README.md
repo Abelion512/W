@@ -301,7 +301,8 @@ snapgent-full/
 │   └── test_workspace_mcp.py  # Workspace MCP server tests
 ├── e2e/                       # Live end-to-end scripts (need a real bridge/browser)
 │   ├── e2e_live.py            # Real bridge + subprocess on an ephemeral port
-│   └── smoke_extension_live.py  # Handshake/rotation smoke in headless Chrome
+│   ├── smoke_extension_live.py  # Handshake/rotation smoke in headless Chrome
+│   └── a2a_matrix_live.py     # Per-provider A2A matrix, cold + warm rounds
 └── sync-upstream.sh           # Sync with upstream, keeping purged paths deleted
 ```
 
@@ -337,7 +338,10 @@ snapgent-extension/test-*.js` (extension stub-DOM), and
 GitHub Actions runs the same suites on every push/PR. The pairing and rotation
 handshake needs a real browser, so it has its own manual smoke:
 `/usr/bin/python3 e2e/smoke_extension_live.py` (headless Chrome, throwaway
-bridge on ports 17613/9333).
+bridge on ports 17613/9333). Routing and bootstrap across every provider have a
+manual matrix too: `python3 e2e/a2a_matrix_live.py` drives each provider through
+the real bridge with one cold (fresh-tab) and one warm (running-session) round
+per provider.
 
 ---
 

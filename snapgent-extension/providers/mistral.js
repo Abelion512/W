@@ -6,6 +6,7 @@ const ZSProvider = (() => {
   "use strict";
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   let diag = () => {};
+  let missingEditorSince = 0;
   let lockedEditor = null;
   let sampledItem = null;
   let sampledLen = 0;
@@ -18,6 +19,16 @@ const ZSProvider = (() => {
     assistant: '[data-message-author-role="assistant"],[data-testid*="assistant-message"],[data-testid*="assistant-turn"],[data-role="assistant"]',
     editor: 'div.ProseMirror[contenteditable="true"],textarea[placeholder*="Ask" i],textarea[placeholder*="Message" i],textarea,[contenteditable="true"][role="textbox"]',
     errors: '[role="alert"],[data-testid*="error"],[class*="error-message"]',
+    // Reasoning renders as a Radix disclosure INSIDE the answer turn: a trigger
+    // button ("Thought for 1s") plus a collapsible content panel. When the panel
+    // is open its full reasoning text is inside the turn, so a command the model
+    // merely DRAFTS while thinking would be read as a real tool call (same
+    // hazard Kimi's `.thinking-container` skip solves). The generated ids are
+    // the stable marker: `collapsible-trigger-*` / `collapsible-content-*`.
+    reasoning: '[id^="collapsible-trigger-"],[id^="collapsible-content-"]',
+    // The turn footer's timestamp ("11:45pm") is metadata, not reply text -
+    // measured live it rode along as the last line of every extracted reply.
+    hint: ".text-hint",
   };
   const timings = {
     GEN_IDLE_MS: 2000,
@@ -82,9 +93,17 @@ const ZSProvider = (() => {
     walk(root);
     return text;
   }
-  const itemText = (item) => textWithout(item);
-  const classifyText = (item, excludeSel) => textWithout(item, excludeSel);
+  // The reasoning-area and footer-hint exclusions ride along with any
+  // caller-supplied selector.
+  const notReasoning = (excludeSel) =>
+    S.reasoning + ", " + S.hint + (excludeSel ? ", " + excludeSel : "");
+  // Final reply text: never includes the reasoning disclosure.
+  const itemText = (item) => textWithout(item, notReasoning());
+  const classifyText = (item, excludeSel) => textWithout(item, notReasoning(excludeSel));
   const bodyOf = (item) => item;
+  // Stream text keeps the reasoning subtree: while the disclosure is open the
+  // growing reasoning IS the growth signal that keeps isGenerating() true until
+  // the answer text starts arriving.
   const streamText = (item) => textWithout(bodyOf(item));
   const streamLen = (item) => streamText(item === undefined ? lastAssistant() : item).length;
   const lastAssistantId = () => {
@@ -143,14 +162,19 @@ const ZSProvider = (() => {
   const isBusyNow = isGenerating;
 
   function snapshot() {
-    return { th: 0, rp: streamLen() };
+    const think = lastAssistant();
+    const panel = think && think.querySelector('[id^="collapsible-content-"]');
+    return { th: panel ? (panel.textContent || "").length : 0, rp: streamLen() };
   }
   function readAssistant() {
     const item = lastAssistant();
+    const panel = item && item.querySelector('[id^="collapsible-content-"]');
     return {
       present: !!item,
-      reply: item ? streamText(item).trim() : "",
-      thinking: "",
+      // The parse loop reads this: reasoning + footer metadata excluded, so a
+      // command drafted inside the reasoning is never detected or executed.
+      reply: item ? textWithout(item, notReasoning()).trim() : "",
+      thinking: panel ? (panel.textContent || "").trim() : "",
       item,
     };
   }
@@ -249,7 +273,20 @@ const ZSProvider = (() => {
     if (!getEditor() && document.querySelector('a[href*="login"],a[href*="signin"],a[href*="sign-in"]')) {
       return "Sign in to Mistral to use Le Chat / Vibe Code.";
     }
-    return getEditor() ? null : "The Mistral input box is not available.";
+    // A site can re-create the composer for a beat right after a send (Grok
+    // rebuilds the tiptap node, Mistral the ProseMirror box). A missing editor
+    // mid-generation is churn, NOT an error - the same false "context_limit"
+    // failed the bootstrap every time (measured live 2026-11-15). Same rule as
+    // Rudder: ignore it while generating, and for a short grace window after.
+    const editor = getEditor();
+    if (!editor) {
+      if (isGenerating()) { missingEditorSince = 0; return null; }
+      if (!missingEditorSince) missingEditorSince = Date.now();
+      if (Date.now() - missingEditorSince < 4000) return null;
+      return "The Mistral input box is not available.";
+    }
+    missingEditorSince = 0;
+    return null;
   }
   const isTooLongMsg = (text) => /conversation.{0,30}(too long|limit)|context.{0,20}limit/i.test(text);
   const isBusyMsg = (text) => /try again later|temporarily unavailable|rate limit|too many requests/i.test(text);

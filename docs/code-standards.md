@@ -30,6 +30,7 @@ setup-config.py            Writes config.json (Linux only)
 tests/test_*.py            Python unit tests (stdlib unittest style; pytest config in pyproject.toml)
 e2e/e2e_live.py             Live e2e: real bridge + subprocess, ephemeral port
 e2e/smoke_extension_live.py Live handshake/rotation smoke in headless Chrome
+e2e/a2a_matrix_live.py      Live per-provider A2A matrix (cold + warm rounds)
 snapgent-extension/
   background.js            Service worker: owns the bridge WebSocket
   popup.html / popup.js    Popup UI (status only, no logic)
@@ -95,6 +96,7 @@ Rules:
 | JS syntax + stub-DOM | CI `tests` job | `node --check` per file in review; `node snapgent-extension/test-*.js` |
 | Live e2e | CI `e2e` job | `python e2e/e2e_live.py` |
 | Pairing/rotation handshake | Manual (needs Chrome) | `python e2e/smoke_extension_live.py` |
+| Per-provider A2A matrix | Manual (needs browser + logins) | `python e2e/a2a_matrix_live.py` |
 | Editor formatting baseline | `.editorconfig` | 4-space Python, 2-space JS/HTML/YAML, LF, final newline, 100-col soft limit |
 
 ## Known deviations (documented, not drift)

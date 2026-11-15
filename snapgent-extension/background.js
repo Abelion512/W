@@ -534,23 +534,31 @@ async function handleSubmitPrompt(msg) {
     if (!tab) { await reply({ ok: false, error: "No AI chat tab is open." }); return; }
     promptTabs.set(promptId, tab.id);
     setUsage({ provider: providerOf(tab.url), effort: route ? route.tier : "auto", tokens: null, seconds: null, ok: null, started: Date.now() });
-    try {
-      // Callback form, never awaited: the content script answers LATER via an
-      // "a2a_result" runtime message, so the channel closing is expected — not a
-      // failure. Only "no receiver" is a real error, and it must not race the
-      // content script's own reply.
-      chrome.tabs.sendMessage(
-        tab.id,
-        { type: "zs-a2a-prompt", prompt: msg.prompt, promptId, route: route ? route.tier : null },
-        () => {
-          const err = chrome.runtime.lastError;
-          if (err && /Receiving end|Could not establish/i.test(err.message || "")) {
-            reply({ ok: false, error: "No Snapgent content script in the AI chat tab. Reload it." });
-          }
-        }
-      );
-    } catch (e) {
-      reply({ ok: false, error: "The AI chat tab did not accept the prompt." });
+    // A tab that was JUST navigated races the content script's MV3 injection:
+    // the first sendMessage can fail with "Receiving end does not exist" even
+    // though the script lands a beat later (measured live: Claude after reload).
+    // Retry briefly before declaring the tab dead.
+    const trySend = () => new Promise((resolve, reject) => {
+      // Callback form: the content script answers LATER via an "a2a_result"
+      // runtime message, so the channel closing is expected — not a failure
+      // ("message port closed" resolves null and must NOT produce a reply).
+      // Only "no receiver" is a real error, and it must not race the content
+      // script's own reply.
+      try {
+        chrome.tabs.sendMessage(tab.id, { type: "zs-a2a-prompt", prompt: msg.prompt, promptId, route: route ? route.tier : null },
+          () => resolve(chrome.runtime.lastError || null));
+      } catch (e) {
+        reject(e);
+      }
+    });
+    let err = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt) await new Promise((resolve) => setTimeout(resolve, 1200));
+      err = await trySend();
+      if (!err || !/Receiving end|Could not establish/i.test(err.message || "")) break;
+    }
+    if (err && /Receiving end|Could not establish/i.test(err.message || "")) {
+      await reply({ ok: false, error: "No Snapgent content script in the AI chat tab. Reload it." });
     }
   } catch (e) {
     await reply({ ok: false, error: String((e && e.message) || e) });

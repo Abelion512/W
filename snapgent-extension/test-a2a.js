@@ -74,7 +74,9 @@ const chrome = {
     },
     sendMessage: (tabId, msg, cb) => {
       tabSends.push({ tabId, msg });
-      if (cb) { lastError = nextSendError; nextSendError = null; cb(); }
+      // lastError persists across sends until a new error is set: a missing
+      // receiver fails EVERY retry, not just the first one.
+      if (cb) { lastError = nextSendError; cb(); }
       return Promise.resolve();
     },
   },
@@ -145,10 +147,10 @@ const until = async (cond, ms = 1000) => {
   ok("prompt_result carries the text", result && result.text === "hello");
   ok("prompt_result carries an empty error on success", result && result.error === "");
 
-  // ── no receiving end -> immediate failure ────────────────────────────────
+  // ── no receiving end -> failure after the brief content-script retry ──────
   nextSendError = { message: "Could not establish connection. Receiving end does not exist." };
   api.handleBridgeMessage({ type: "submit_prompt", id: "p2", prompt: "hi again" });
-  await until(() => frames.some((f) => f.type === "prompt_result" && f.prompt_id === "p2"));
+  await until(() => frames.some((f) => f.type === "prompt_result" && f.prompt_id === "p2"), 8000);
   const missing = frames.find((f) => f.type === "prompt_result" && f.prompt_id === "p2");
   ok("missing content script reports failure", missing && missing.ok === false);
   ok("missing content script sends exactly one failure",

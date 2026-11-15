@@ -3946,8 +3946,13 @@
     function pageThemeHint() {
       const de = document.documentElement, b = document.body;
       const cls = (de.className + " " + (b ? b.className : "")).toLowerCase();
-      if (/\bdark\b/.test(cls)) return "dark";
-      if (/\blight\b/.test(cls)) return "light";
+      const hasDark = /\bdark\b/.test(cls);
+      const hasLight = /\blight\b/.test(cls);
+      // Tailwind-style theme variants list BOTH words ("scheme-light
+      // dark:scheme-dark", measured live on Grok) without meaning dark mode, so
+      // a tie falls through to the stronger signals below.
+      if (hasDark && !hasLight) return "dark";
+      if (hasLight && !hasDark) return "light";
       const attr = (de.getAttribute("data-theme") || de.getAttribute("data-color-mode") ||
                     de.getAttribute("data-color-scheme") || "").toLowerCase();
       if (/dark/.test(attr)) return "dark";
@@ -4724,13 +4729,21 @@
   }
 
   async function openFreshChat() {
+    // A cold tab often arrives with a RESTORED thread (the site reopens the last
+    // conversation) while its sidebar is still mounting, so the new-chat control
+    // may not exist for a few seconds. Poll for it instead of failing on the
+    // first paint, or a healthy tab reports "no new-chat button" forever.
     if (P.chatIsEmpty()) return true;
-    const control = findNewChatControl();
-    if (!control) return false;
+    const controlDeadline = Date.now() + 10000;
+    let control = null;
+    while (!(control = findNewChatControl())) {
+      if (Date.now() >= controlDeadline) return false;
+      await sleep(400);
+    }
     control.click();
     const started = Date.now();
     while (Date.now() - started < 12000) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await sleep(250);
       if (P.chatIsEmpty() && (!P.getEditor || P.getEditor())) return true;
     }
     return P.chatIsEmpty();
@@ -4760,6 +4773,18 @@
       const cap = setTimeout(() => abortA2A("hard-cap"), A2A_HARD_CAP_MS);
       try {
         if (!A.started) {
+          // A cold tab (just navigated) paints the site shell well before the
+          // composer mounts. Wait for the editor here - one place, keyed on the
+          // provider's own selector - instead of extending every provider's
+          // ensureComposerReady (measured live: GLM cold tabs needed far longer
+          // than the one-shot 2s retry could cover).
+          const composerDeadline = Date.now() + 30000;
+          while (!(P.getEditor && P.getEditor())) {
+            if (Date.now() >= composerDeadline) {
+              throw new Error("The provider composer never appeared (waited 30s). Reload the tab and retry.");
+            }
+            await sleep(500);
+          }
           if (!(await openFreshChat())) {
             throw new Error(
               "Could not start a Snapgent session: this chat already has messages " +

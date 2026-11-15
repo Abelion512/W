@@ -243,3 +243,58 @@ The remaining failures are all the same shape: a cold page has no composer yet
 when the bootstrap runs, or the site restored a thread so the chat is not empty.
 None of them is a routing, bridge or cancellation problem, and the harness
 reports them as failures instead of timing out silently.
+
+## Live verification (2026-11-15)
+
+`e2e/a2a_matrix_live.py --rounds 2` drives every provider through the real A2A
+facade: round 1 COLD (the tab is navigated to a fresh chat, so the extension has
+to bootstrap a cold page), round 2 WARM (same tab, session already running), then
+both rounds again. Times are wall clock from request to reply.
+
+| Provider | Cold | Warm | Result |
+| --- | --- | --- | --- |
+| chatgpt | 42-49s | 11-12s | 4/4 pass |
+| claude | 21-24s | 5s | 4/4 pass |
+| gemini | 17-21s | 5-6s | 4/4 pass |
+| deepseek | 18-22s | 6s | 4/4 pass |
+| kimi | 90-95s | 5.6-25s | 4/4 pass (the cold tab takes ~90s to settle its composer) |
+| meta | 20s | 4-5s | 4/4 pass |
+| rudder | 5.8-8.9s | 7-11s | pass cold+warm; needed the sticky-write fix below |
+| mistral | 18-23s | 3.6s | passes until the account hits the site's message limit |
+| arena | 25-80s | - | send works, session start is refused on the restored battle page |
+| glm | - | - | blocked: "Your daily usage quota for this feature" |
+| qwen | - | - | blocked: "You've reached today's Qwen3.8-Max limit" |
+| grok | - | - | blocked: "Free tier limit reached" |
+
+What this round fixed and where it is visible in the diagnostics (`#zs-diag-log`):
+
+- **Cold bootstrap** (one place, `runA2APrompt`): wait up to 30 s for the
+  provider's composer and poll 10 s for the new-chat control, instead of a
+  one-shot check that failed on every cold page. `background.js` also retries a
+  swallowed `handleSubmitPrompt` up to three times ("Receiving end does not
+  exist" while the worker wakes).
+- **Rudder's send control** only mounts once the site's own state holds the text.
+  A cold page hydrates over a programmatic write, so the text was gone
+  (`send.wrote len 0`) and the button never appeared (~1 cold run in 3). Now the
+  write is repeated until the text sticks (`send.rewrote`), which also covers the
+  hydration window.
+- **Arena** never times out silently any more: when its send button stays
+  disabled on a text-only turn the task fails in 20 s with the reason, instead of
+  burning the 540 s task budget and then the bridge timeout.
+- **Mistral** strips the site's reasoning disclosure from the reply text
+  (`collapsible-trigger`/`collapsible-content` + timestamp footer), so a reply is
+  `PONG`, not `Thought for 1s ... PONG`.
+- **Grok** cannot host an in-composer bar: the composer is bottom-docked (no
+  ancestor padding moves it) and inserting a node into its React parent sent the
+  page into a re-render loop (2-25 s stalls, editor unmounted for good). The
+  harness therefore uses the float panel above the composer, and `textarea` was
+  added last to the editor list because the home page composer is a bare
+  textarea.
+- **scanError** no longer reports "input box not available" while the composer is
+  being rebuilt mid-generation (grok, claude, mistral): that surfaced as a false
+  `context_limit` and killed the bootstrap.
+
+The three quota blocks are the provider refusing the account, not the harness:
+the same tabs answer again on a warm run once the limit resets. Arena's remaining
+failure is the site's restored A/B thread: the turns from the previous battle stay
+in the DOM, so the empty-chat gate refuses the session.

@@ -264,7 +264,22 @@ ZS_A2A_PORT=19000 ZS_A2A_TOKEN=my-token bash Linux_Start.sh
 
 ## Testing
 
+Offline (no browser, no network):
+
 ```
 python3 -m unittest
 node snapgent-extension/test-a2a.js
 ```
+
+Live, against the real providers through a running bridge and a CDP browser:
+
+```
+python3 e2e/a2a_matrix_live.py --rounds 2 --timeout 540
+python3 e2e/a2a_matrix_live.py --only claude,rudder --rounds 1
+```
+
+The matrix opens every provider tab fresh (a cold start, which is the case that
+used to fail), sends the one-word prompt with `metadata.provider` pinned, and
+prints a per-provider line plus a STABLE / NOT STABLE verdict across rounds.
+`--cdp` is the CDP port (default `9222`); `--only` narrows the provider set
+to the comma-separated names the runner knows.
