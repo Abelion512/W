@@ -4010,7 +4010,9 @@
       if (anchorPadEl) { try { anchorPadEl.style.paddingTop = ""; } catch {} anchorPadEl = null; }
     }
 
-    // Position the floating "⚠ unstable" pill just above the bar's left edge.
+    // Position the floating "⚠ unstable" pill just above the bar's RIGHT edge.
+    // Right, not left: on GLM the site's own "Choose project" chip sits directly
+    // above the composer's left corner and the pill covered it (measured live).
     function placeUnstable() {
       const u = unstableEl;
       if (!u) return;
@@ -4019,7 +4021,8 @@
       if (!br.width) { if (!u.hidden) u.hidden = true; return; }
       if (u.hidden) u.hidden = false;
       const uh = u.offsetHeight || 20;
-      u.style.left = Math.round(br.left) + "px";
+      const uw = u.offsetWidth || 70;
+      u.style.left = Math.round(Math.max(4, br.right - uw)) + "px";
       u.style.top = Math.round(Math.max(4, br.top - uh - 5)) + "px";
     }
 
@@ -4119,7 +4122,10 @@
         bar.classList.remove("zs-bar-inline");
         if (root && bar.parentElement !== root) root.appendChild(bar);
       }
-      const f = (P.getEditor && P.getEditor()) || (P.composerFrame && P.composerFrame());
+      // Measure the composer CARD when the provider exposes one (Grok's rounded
+      // pill, …): the bar then matches the input's width and edges instead of the
+      // bare text line inside it.
+      const f = (P.composerFrame && P.composerFrame()) || (P.getEditor && P.getEditor());
       if (!f) { bar.style.display = "none"; if (menuEl) menuEl.hidden = true; return; }
       bar.style.display = "flex";
       const r = f.getBoundingClientRect();
@@ -4127,7 +4133,15 @@
       const w = Math.min(r.width, BAR_MAX_W);
       const left = Math.round(r.left + (r.width - w) / 2);
       const bh = bar.offsetHeight || 40;
-      const top = Math.max(4, Math.round(r.top - bh - BAR_GAP));
+      // Side matters on a CENTERED composer (an empty landing page): the space
+      // right above it is the site's own headline, and a floating panel there
+      // covers it (measured live on Grok: the bar sat on "What's on the agenda
+      // today?"). Bottom-docked composers have a conversation above and empty
+      // space below, centered ones the reverse - so flip below in that case.
+      const centered = r.bottom < window.innerHeight * 0.72;
+      const top = centered
+        ? Math.min(window.innerHeight - bh - 4, Math.round(r.bottom + BAR_GAP))
+        : Math.max(4, Math.round(r.top - bh - BAR_GAP));
       bar.style.width = w + "px";
       bar.style.left = left + "px";
       bar.style.top = top + "px";

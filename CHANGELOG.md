@@ -5,6 +5,17 @@ All notable changes to snapgentV3 Free are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **The in-page bar reads as part of the composer.** On Claude and Gemini it was
+  a translucent card with its own radius and an 8px gap above the input, i.e. a
+  second widget stacked on the composer; it is now a flat, flush row. On Grok,
+  where the composer cannot host it, the floating panel docks below a centered
+  (empty-chat) composer instead of covering the site's headline. The
+  `⚠ unstable` pill moved to the bar's right edge because it covered GLM's own
+  "Choose project" chip.
+- **Arena starts on a restored Battle page.** The tab reloaded into Battle mode,
+  the one-shot restore lost the race with the dropdown, and Start refused every
+  time with "Could not start a Snapgent session"; `ensureComposerReady` now
+  retries the restore at startup and waits up to 4s for it to land.
 - **A timed-out A2A prompt no longer locks the tab.** The bridge sends
   `cancel_prompt` when its deadline expires, the extension relays it to the tab,
   and the tab stops the native generation and clears its running state; a

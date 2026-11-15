@@ -22,6 +22,7 @@ loaded, one open tab per provider, and the CDP port of that browser
 import argparse
 import asyncio
 import json
+import re
 import secrets
 import sys
 import time
@@ -52,6 +53,19 @@ PROVIDERS = {
 }
 
 COLD_SETTLE_S = 10.0
+
+# The site's own refusal, not a harness bug. Re-sending the (large) bootstrap
+# prompt after one of these only burns the account further and teaches the run
+# nothing - the same tab answers once the limit resets. A provider that reports
+# one is marked BLOCKED for the rest of the run and skipped.
+QUOTA_RE = (
+    r"limit reached|reached (today's|your|the) .{0,24}limit|message[s]? limit|"
+    r"quota|out of (messages|credits)|upgrade (your|for)|try again later"
+)
+
+
+def is_quota_block(text):
+    return bool(re.search(QUOTA_RE, text or "", re.IGNORECASE))
 
 
 def a2a_send(text, metadata, timeout=600.0):
@@ -136,9 +150,13 @@ async def prepare_tab(cdp, provider, cold):
     return ws_url, None
 
 
-async def run_round(cdp, providers, round_name, cold, timeout, results):
+async def run_round(cdp, providers, round_name, cold, timeout, results, blocked=None):
+    blocked = blocked if blocked is not None else {}
     print(f"\n=== {round_name} round ({'cold' if cold else 'warm'}) ===", flush=True)
     for provider in providers:
+        if provider in blocked:
+            print(f"SKIP  {provider:8s} blocked: {blocked[provider][:70]}", flush=True)
+            continue
         ws_url, err = await prepare_tab(cdp, provider, cold)
         if not ws_url:
             results.append({"round": round_name, "provider": provider, "ok": False, "error": err, "seconds": 0})
@@ -152,9 +170,17 @@ async def run_round(cdp, providers, round_name, cold, timeout, results):
             "text": reply.get("text", "")[:40], "error": reply.get("error", ""),
             "seconds": reply.get("seconds"),
         })
+        error = reply.get("error", "") or ""
+        refusal = error or reply.get("text", "")
+        if not passed and is_quota_block(refusal):
+            # The account, not the code: stop spending turns on it for this run.
+            blocked[provider] = refusal.strip()[:160]
+            results[-1]["blocked"] = blocked[provider]
+            print(f"BLOCKED  {provider:8s} {reply.get('seconds')}s  {blocked[provider][:70]}", flush=True)
+            continue
         mark = "PASS" if passed else "FAIL"
         print(f"{mark}  {provider:8s} {reply.get('seconds')}s"
-              + ("" if passed else f"  err={reply.get('error', '')[:80]} text={reply.get('text', '')[:40]!r}"),
+              + ("" if passed else f"  err={error[:80]} text={reply.get('text', '')[:40]!r}"),
               flush=True)
 
 
@@ -171,23 +197,32 @@ def main():
         print("unknown providers: " + ", ".join(unknown))
         return 2
     results = []
+    blocked = {}
     try:
         for index in range(1, args.rounds + 1):
-            asyncio.run(run_round(args.cdp, providers, f"cold-{index}", True, args.timeout, results))
-            asyncio.run(run_round(args.cdp, providers, f"warm-{index}", False, args.timeout, results))
+            asyncio.run(run_round(args.cdp, providers, f"cold-{index}", True, args.timeout, results, blocked))
+            asyncio.run(run_round(args.cdp, providers, f"warm-{index}", False, args.timeout, results, blocked))
+            if blocked:
+                # Every remaining round would just re-ask a site that said no.
+                print("\nstopping: " + ", ".join(f"{p} blocked" for p in blocked), flush=True)
+                break
             last_two = results[-2 * len(providers):]
             if all(r["ok"] for r in last_two):
                 break
     except KeyboardInterrupt:
         print("\ninterrupted")
     passed_last = {r["provider"]: r["ok"] for r in results[-2 * len(providers):]}
-    print("\n--- summary (last cold+warm round) ---")
+    print("\n--- summary ---")
     for provider in providers:
+        if provider in blocked:
+            # Not a failure of the harness, and not something a retry can fix.
+            print(f"BLOCKED  {provider:8s} {blocked[provider][:90]}")
+            continue
         state = "PASS" if passed_last.get(provider) else "FAIL"
         rows = [r for r in results if r["provider"] == provider]
         detail = "; ".join(f"{r['round']}:{'ok' if r['ok'] else (r.get('error') or 'fail')[:40]}" for r in rows)
         print(f"{state}  {provider:8s} {detail}")
-    stable = bool(results) and all(passed_last.get(p) for p in providers)
+    stable = bool(results) and all(passed_last.get(p) for p in providers if p not in blocked)
     print("STABLE" if stable else "NOT STABLE")
     return 0 if stable else 1
 
