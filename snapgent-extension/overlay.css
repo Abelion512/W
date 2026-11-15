@@ -27,26 +27,28 @@
 
 /* In-flow mode: the bar is a real, full-width node in the composer layout that
    pushes content down instead of floating. Two looks:
-   • default (mounted ABOVE the input box, e.g. Gemini) → a subtle surface card so
-     it reads as a panel and doesn't float in empty space;
+   • default (mounted ABOVE the input box, e.g. Gemini, Claude) → flat and flush:
+     no card, no gap, no rules. It reads as the composer's own top row rather than
+     a second widget stacked on it (a translucent card + 8px gap was measured live
+     as "a detached pill floating above the input" on Gemini and Claude);
    • .zs-bar-inside (mounted INSIDE the input box, e.g. DeepSeek) → transparent
      with just a divider, so it blends into the composer surface it lives in. */
 #zs-bar.zs-bar-inline {
   position: static;
   width: 100%;
   left: auto; top: auto;
-  margin: 0 0 8px;
+  margin: 0;
   box-sizing: border-box;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  border-radius: 12px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   box-shadow: none;
   backdrop-filter: none;
-  padding: 7px 12px;
+  padding: 2px 16px 8px;
 }
 html.zs-light #zs-bar.zs-bar-inline {
-  background: rgba(0, 0, 0, 0.04);
-  border-color: rgba(0, 0, 0, 0.10);
+  background: transparent;
+  border-color: transparent;
 }
 #zs-bar.zs-bar-inline.zs-bar-inside {
   margin: 0 0 6px;

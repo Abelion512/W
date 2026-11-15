@@ -600,9 +600,13 @@ const ZSProvider = (() => {
   // The option label is glued to its description ("DirectChat with 1 model at a
   // time"), so a trailing \b after "direct" never matches - anchor on the prefix.
   function pickDirectOption() {
-    for (const o of document.querySelectorAll('[role="option"]')) {
+    for (const o of document.querySelectorAll('[role="option"],[role="menuitem"]')) {
       if (o.offsetParent === null) continue;
-      if (/^\s*direct/i.test(o.textContent || "")) { try { o.click(); } catch {} return true; }
+      const label = (o.getAttribute("aria-label") || "") + " " + (o.textContent || "");
+      if (/^\s*direct/i.test(label) || /\bdirect\b/i.test(o.getAttribute("aria-label") || "")) {
+        try { o.click(); } catch {}
+        return true;
+      }
     }
     return false;
   }
@@ -697,11 +701,24 @@ const ZSProvider = (() => {
     return { ready: isSupportedMode() };
   }
   async function ensureComposerReady(reason) {
-    const supported = isSupportedMode();
+    let supported = isSupportedMode();
     diag("mode_ready", { reason, provider: "arena", mode: currentMode(), supported });
     // Gate on a supported mode AND a present composer. An unsupported mode (Battle
     // / Side by Side) makes the core show its "mode not ready" banner instead of
     // starting - the light prevention the user asked for.
+    // BUT a cold tab can come up in Battle mode because init()'s one-shot restore
+    // lost the race with the dropdown's first render (measured live: the page
+    // then reports "Could not start a Snapgent session" in ~2s, every time, and
+    // the tab stays unusable until the user switches by hand). At STARTUP only -
+    // never mid-conversation - retry the restore and wait for it to land, so the
+    // deliberate-mode rule still holds for a user who picked Battle themselves.
+    if (!supported && reason === "startup" && !activeUnsupportedMode()) {
+      await restoreDirectOnce();
+      const deadline = Date.now() + 4000;
+      while (Date.now() < deadline && !isSupportedMode()) await sleep(200);
+      supported = isSupportedMode();
+      diag("mode_ready.retry", { provider: "arena", mode: currentMode(), supported });
+    }
     return { ready: supported && !!getEditor() };
   }
 

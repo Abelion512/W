@@ -251,6 +251,26 @@ facade: round 1 COLD (the tab is navigated to a fresh chat, so the extension has
 to bootstrap a cold page), round 2 WARM (same tab, session already running), then
 both rounds again. Times are wall clock from request to reply.
 
+Second round (same day, after the bar/cold-start work below) — every row is a
+COLD run: the tab is navigated to the site root first, then one pinned prompt.
+
+| Provider | Cold | Result |
+| --- | --- | --- |
+| deepseek | 21.4s | `PONG` |
+| gemini | 19.8s | `PONG` |
+| meta | 24.1s | `PONG` |
+| kimi | 35.4s | `PONG` |
+| rudder | 27.2s | `PONG` |
+| chatgpt | 40.9s | `PONG` |
+| glm | 39.0s | `PONG` (was refused before the 30s composer wait) |
+| claude | 20.2s | `PONG` |
+| arena | 26.6s | `PONG` (was refused: restored Battle mode, see below) |
+| mistral | 25.2s | `PONG` — exactly, no reasoning header |
+| qwen | 8.1s | blocked by the account: "You've reached today's Qwen3.8-Max limit" |
+| grok | - | the tab's main thread stalls ~750ms out of every second (its own re-render loop, present with the extension idle); even a CDP eval times out, so the run parks in `send.waitVisible` |
+
+First round, for history:
+
 | Provider | Cold | Warm | Result |
 | --- | --- | --- | --- |
 | chatgpt | 42-49s | 11-12s | 4/4 pass early in the round; later the site served a voice-first home shell (no reachable composer, banner "ChatGPT mode not ready") |
@@ -281,20 +301,40 @@ What this round fixed and where it is visible in the diagnostics (`#zs-diag-log`
 - **Arena** never times out silently any more: when its send button stays
   disabled on a text-only turn the task fails in 20 s with the reason, instead of
   burning the 540 s task budget and then the bridge timeout.
+- **Arena's restored Battle mode** used to make Start refuse forever: the tab
+  reloads into Battle, `restoreDirectOnce()` loses the race with the dropdown's
+  first render (`arena.restore_direct {ok:false}`), and every later start answered
+  "Could not start a Snapgent session" in ~2 s. At STARTUP only, `ensureComposerReady`
+  now retries the restore and waits up to 4 s for it to land (never mid-conversation,
+  so a mode the user picked is still respected).
 - **Mistral** strips the site's reasoning disclosure from the reply text
   (`collapsible-trigger`/`collapsible-content` + timestamp footer), so a reply is
   `PONG`, not `Thought for 1s ... PONG`.
 - **Grok** cannot host an in-composer bar: the composer is bottom-docked (no
   ancestor padding moves it) and inserting a node into its React parent sent the
   page into a re-render loop (2-25 s stalls, editor unmounted for good). The
-  harness therefore uses the float panel above the composer, and `textarea` was
-  added last to the editor list because the home page composer is a bare
-  textarea.
+  harness therefore uses the float panel, and `textarea` was added last to the
+  editor list because the home page composer is a bare textarea. On a CENTERED
+  composer (empty landing) the panel now docks BELOW it instead of above: above
+  the composer is the site's own headline, which the panel used to cover.
 - **scanError** no longer reports "input box not available" while the composer is
   being rebuilt mid-generation (grok, claude, mistral): that surfaced as a false
   `context_limit` and killed the bootstrap.
 
-The three quota blocks are the provider refusing the account, not the harness:
-the same tabs answer again on a warm run once the limit resets. Arena's remaining
-failure is the site's restored A/B thread: the turns from the previous battle stay
-in the DOM, so the empty-chat gate refuses the session.
+The quota blocks are the provider refusing the account, not the harness: the
+same tabs answer again once the limit resets.
+
+## In-page bar placement (2026-11-15)
+
+Measured live on each site with the bar's own geometry (`#zs-bar` rect against the
+composer's), not by eye alone:
+
+- **Claude, Gemini** mount the bar above the composer card. It used to be drawn as
+  a translucent card with its own radius and an 8 px gap, so it read as a second
+  widget stacked on the input (and on Gemini the `⚠ unstable` pill floated in
+  empty space on the left). The bar is now flat and flush — no surface, no radius,
+  no gap — so it reads as the composer's own top row.
+- **GLM, Kimi, Meta** hug the composer card's top edge (anchored mode).
+- **Grok** floats (see above) and now flips below a centered composer.
+- The `⚠ unstable` pill is right-aligned: left-aligned it covered GLM's own
+  "Choose project" chip, which sits above the composer's left corner.
