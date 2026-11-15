@@ -253,7 +253,7 @@ both rounds again. Times are wall clock from request to reply.
 
 | Provider | Cold | Warm | Result |
 | --- | --- | --- | --- |
-| chatgpt | 42-49s | 11-12s | 4/4 pass |
+| chatgpt | 42-49s | 11-12s | 4/4 pass early in the round; later the site served a voice-first home shell (no reachable composer, banner "ChatGPT mode not ready") |
 | claude | 21-24s | 5s | 4/4 pass |
 | gemini | 17-21s | 5-6s | 4/4 pass |
 | deepseek | 18-22s | 6s | 4/4 pass |
