@@ -267,7 +267,7 @@ COLD run: the tab is navigated to the site root first, then one pinned prompt.
 | arena | 26.6s | `PONG` (was refused: restored Battle mode, see below) |
 | mistral | 25.2s | `PONG` — exactly, no reasoning header |
 | qwen | 8.1s | blocked by the account: "You've reached today's Qwen3.8-Max limit" |
-| grok | - | the tab's main thread stalls ~750ms out of every second (its own re-render loop, present with the extension idle); even a CDP eval times out, so the run parks in `send.waitVisible` |
+| grok | 101.1s | blocked by the account: the site answers "Free tier limit reached", the harness refuses to declare the session started and surfaces that reason instead of a fake reply |
 
 First round, for history:
 
