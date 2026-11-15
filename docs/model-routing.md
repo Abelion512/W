@@ -345,7 +345,7 @@ A2A facade.
 | qwen | 41.4s | 6.8s | `PONG` — the earlier daily-limit block has reset |
 | arena | 30.0s | 7.4s | `PONG` (Battle-mode restore fix holds) |
 | rudder | 27.3s | 9.2s | `PONG` |
-| grok | 10.5s | - | **BLOCKED**: "Free tier limit reached" (was a real FAIL earlier in the day, see below) |
+| grok | 10.5s | - | **BLOCKED**: "Free tier limit reached" (was a real FAIL earlier in the day, see below) — re-run once the limit reset, see below |
 
 Grok, in detail. Three separate problems, all found on the live site and all
 fixed; the account's own limit is what stops a PASS right now.
@@ -372,8 +372,23 @@ fixed; the account's own limit is what stops a PASS right now.
    startSession's reason is carried into the A2A error, so the matrix reports
    BLOCKED in ~10s with the site's own words.
 
-The write fix is proven by the warm round that ran before the limit hit
-(`PASS grok 33.2s`); a cold PASS still needs the account's limit to reset.
+The write fix was proven by the warm round that ran before the limit hit
+(`PASS grok 33.2s`).
+
+Re-run on 2026-11-16, after the account's limit had reset, on a fresh tab
+(`--only grok --rounds 1`):
+
+| Provider | Cold | Warm | Result |
+| --- | --- | --- | --- |
+| grok | 93.4s | 4.4s | `PONG` — first cold PASS; `STABLE` |
+
+Grok's cold row is green. The first attempt that day did not fail on the site:
+the tab was still holding a **parked A2A session from an earlier live run**, and
+its `#zs-diag-log` showed `park.resumed {"parkedMs":294493}` followed by the old
+loop sending its `list_commands` output as the next turn, so the probe was never
+sent and the request timed out at the bridge. Closing that tab and opening a
+fresh `https://grok.com/` (composer `div.tiptap`, hidden 0px mirror ignored) was
+all the cold PASS needed.
 
 Every other provider passes cold and warm, including the two that were blocked
 earlier today (qwen, and grok's own quota message). The quota-aware skip did not
