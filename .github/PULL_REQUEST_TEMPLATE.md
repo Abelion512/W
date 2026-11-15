@@ -24,6 +24,17 @@ Fixes #
 
 ![flow](docs/assets/a2a-task-flow.svg)
 
+## Infographic (always)
+
+<!-- Every PR carries a picture a reviewer can look at without running anything:
+     a before/after collage for UI work — `![bar](docs/assets/bar-seating-before-after.png)`
+     — the annotated flow for control/data changes, or a screenshot of the
+     result for providers and endpoints. Generate it with a checked-in script
+     (e.g. scripts/make_bar_infographic.py) so the next person can re-shoot it
+     instead of drawing a new one. Text-only PRs are the exception, not the rule. -->
+
+![infographic](docs/assets/bar-seating-before-after.png)
+
 ## Verification
 
 <!-- Facts, not adjectives. Paste the command and its result. A live check that
