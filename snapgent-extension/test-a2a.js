@@ -155,6 +155,10 @@ const until = async (cond, ms = 1000) => {
   ok("missing content script reports failure", missing && missing.ok === false);
   ok("missing content script sends exactly one failure",
      frames.filter((f) => f.type === "prompt_result" && f.prompt_id === "p2").length === 1);
+  // Clear the injected error: the stub keeps it on every later sendMessage, and
+  // leaving it set made every routing test below look like a dead tab (the relay
+  // retried 3x and replied failure, which the tabSends-only asserts never saw).
+  nextSendError = null;
 
   // ── a2a_result failure path ───────────────────────────────────────────────
   onRuntimeMessage({ type: "a2a_result", promptId: "p3", ok: false, error: "boom" }, {}, () => {});
