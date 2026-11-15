@@ -99,6 +99,16 @@ All notable changes to snapgentV3 Free are documented here.
   because the bridge cannot tell one local process from another. The old rule is
   still available as `ZS_BRIDGE_AUTH=strict`. Pairing instructions in `README.md`,
   `docs/linux-stability.md` and `docs/security-and-ops.md` were rewritten to match.
+- **The in-page bar draws from one design scale.** Radius, spacing, type and the
+  32px control height are now steps of a single token set (`--zs-sp-*`,
+  `--zs-r-*`, `--zs-text-*`) declared once instead of ~90 literal values spread
+  across the bar, its menus and its controls. A provider that needs a wider inset
+  or a lighter weight re-points a token (`--zs-bar-inset`, `--zs-weight-strong`)
+  rather than adding its own pixels, so seating a new site cannot drift into 7px
+  here and 9px there. The scale is declared on `:root` because inline mode moves
+  the bar into the host's composer, outside `#zs-root`. Off-grid legacy values
+  moved to the nearest step, so nothing on the bar shifted by more than 1px, and
+  every control on the bar is now capped to one control height.
 - **The A2A bearer token is kept in a file** (`~/.snapgent/a2a_token`, mode `600`,
   reused across restarts) instead of only being printed, so a local agent reads it
   rather than copying the value out of the bridge window. `ZS_A2A_TOKEN` still pins

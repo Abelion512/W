@@ -1,10 +1,66 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* overlay.css - snapgentV3 Free in-page UI. Scoped under #zs-root / .zs-* */
 
+/* ── design tokens: ONE scale for the in-page bar ──────────────────────────
+   Every corner, gap and type size the bar uses is a step of this scale. A
+   provider that needs a wider inset or a softer weight no longer types new
+   pixels into its own rule - it re-points a token to another step (see the
+   `.zs-prov-*` rules below). Seating a new site is therefore choosing steps,
+   not inventing values, and the bar can't drift into 7px here / 9px there.
+
+   Why these steps: spaces sit on a 2px grid to 16 then a 4px grid to 32 (the
+   32px control height is the bar's baseline rhythm, Apple-style: one control
+   height, capsules for anything that height); radii follow how corner
+   continuity actually reads at these sizes - 5-6 for micro pills, 8-9 for
+   controls, 12-14 for cards, capsule for anything on the control height; type
+   keeps the bar's existing optical sizes (9.5-13) so the tokens only changed
+   the source of truth, never the look. The handful of off-grid numbers the old
+   rules carried (7px vertical padding, a 9px gap, a 3px nudge) moved to the
+   nearest step, so nothing on the bar shifts by more than a pixel.
+
+   Scope: the scale lives on :root as well as on #zs-root because inline mode
+   moves the bar INTO the host's composer (a sibling subtree, not a child of
+   #zs-root). Custom properties inherit, so declaring them once on the document
+   root reaches the bar wherever the core mounts it. */
+:root,
+#zs-root,
+#zs-input-cover {
+  /* The scale is namespaced --zs-*, so exposing it from :root cannot collide
+     with a host page's own custom properties. */
+  /* space */
+  --zs-sp-1: 2px;  --zs-sp-2: 4px;  --zs-sp-3: 6px;  --zs-sp-4: 8px;
+  --zs-sp-5: 10px; --zs-sp-6: 12px; --zs-sp-7: 14px; --zs-sp-8: 16px;
+  --zs-sp-9: 20px; --zs-sp-10: 24px; --zs-sp-11: 28px; --zs-sp-12: 32px;
+
+  /* radius */
+  --zs-r-2xs: 5px; --zs-r-xs: 6px; --zs-r-sm: 8px; --zs-r-md: 9px;
+  --zs-r-lg: 12px; --zs-r-xl: 13px; --zs-r-2xl: 14px; --zs-r-pill: 999px;
+
+  /* type */
+  --zs-text-3xs: 9.5px; --zs-text-2xs: 10px; --zs-text-xs: 10.5px;
+  --zs-text-sm: 11.5px; --zs-text-md: 12px; --zs-text-lg: 12.5px; --zs-text-xl: 13px;
+  --zs-lh-tight: 1.3; --zs-lh-body: 1.45;
+  --zs-w-medium: 500; --zs-w-semibold: 600; --zs-w-bold: 700;
+  --zs-font-ui: ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --zs-font-num: ui-monospace, "Cascadia Code", "Cascadia Mono", monospace;
+
+  /* motion (decelerating curve, no bounce) */
+  --zs-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --zs-dur: 0.14s;
+
+  /* the bar's own vocabulary: this is what a provider rule may re-point */
+  --zs-control-h: 32px;          /* every control in the bar is this tall */
+  --zs-control-h-touch: 36px;    /* narrow viewports: thumb-sized */
+  --zs-bar-inset: var(--zs-sp-8);/* horizontal content inset */
+  --zs-bar-gap: var(--zs-sp-4);
+  --zs-bar-radius: var(--zs-r-xl);
+  --zs-weight-strong: var(--zs-w-bold);
+}
+
 #zs-root {
   position: fixed;
   z-index: 2147483600;
-  font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--zs-font-ui);
 }
 
 /* ── status bar (anchored above the composer; left/top/width set inline) ──── */
@@ -12,16 +68,16 @@
   position: fixed;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--zs-bar-gap);
   box-sizing: border-box;
-  padding: 7px 9px 7px 12px;
+  padding: var(--zs-sp-4) var(--zs-sp-5) var(--zs-sp-4) var(--zs-sp-6);
   background: rgba(20, 20, 28, 0.97);
   color: #e8e8ec;
   border: 1px solid rgba(129, 140, 248, 0.30);
-  border-radius: 13px;
+  border-radius: var(--zs-bar-radius);
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.42);
   backdrop-filter: blur(10px);
-  font-size: 12px;
+  font-size: var(--zs-text-md);
   user-select: none;
 }
 
@@ -44,21 +100,21 @@
   border-radius: 0;
   box-shadow: none;
   backdrop-filter: none;
-  padding: 2px 16px 8px;
+  padding: var(--zs-sp-1) var(--zs-bar-inset) var(--zs-sp-4);
 }
 html.zs-light #zs-bar.zs-bar-inline {
   background: transparent;
   border-color: transparent;
 }
 #zs-bar.zs-bar-inline.zs-bar-inside {
-  margin: 0 0 6px;
+  margin: 0 0 var(--zs-sp-3);
   background: transparent;
   border: none;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 0;
-  /* Inset to match the composer's own text padding (≈16px) so the content lines
-     up with the input and the right-side buttons clear the rounded corner. */
-  padding: 4px 16px 10px;
+  /* Inset to match the composer's own text padding so the content lines up with
+     the input and the right-side buttons clear the rounded corner. */
+  padding: var(--zs-sp-2) var(--zs-bar-inset) var(--zs-sp-5);
 }
 html.zs-light #zs-bar.zs-bar-inline.zs-bar-inside {
   background: transparent;
@@ -80,21 +136,26 @@ html.zs-light #zs-bar.zs-bar-inline.zs-bar-inside {
   /* A touch of vertical room so the bar doesn't feel cramped against the input
      (matches the roomier DeepSeek inline look). The reserved strip in placeBar
      (bar height + gap) tracks this automatically. */
-  padding: 9px 16px;
+  padding: var(--zs-sp-5) var(--zs-bar-inset);
 }
 html.zs-light #zs-bar.zs-bar-anchored {
   background: transparent;
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
 }
 
-/* Per-site tuning. On Gemini the default system stack looked foreign next to
-   Google Sans, and weight 700 read heavy - match the host for a native feel.
-   DeepSeek is left exactly as-is (it already blends well). */
+/* ── per-site rules: re-point tokens, never new pixel values ────────────────
+   A provider gets its own line here only when the host's own design language
+   reads better than the scale. Each line picks a step from the token scale, so
+   the bar keeps one rhythm across sites. DeepSeek is deliberately absent: the
+   defaults already blend there. */
+/* Gemini: its system stack looked foreign next to Google Sans, and the bold
+   weight read heavy against Gemini's type - match the host instead. */
 #zs-bar.zs-prov-gemini {
-  font-family: "Google Sans Text", "Google Sans", Roboto, ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --zs-font-ui: "Google Sans Text", "Google Sans", Roboto, ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --zs-weight-strong: var(--zs-w-medium);
 }
 #zs-bar.zs-prov-gemini #zs-action,
-#zs-bar.zs-prov-gemini #zs-state b { font-weight: 500; }
+#zs-bar.zs-prov-gemini #zs-state b { font-weight: var(--zs-weight-strong); }
 
 /* ChatGPT's composer surface is a CSS grid. Its template was, until 2026-09:
      "header header header" / "leading primary trailing" / ". footer ."
@@ -122,18 +183,19 @@ html.zs-light #zs-bar.zs-bar-anchored {
      the "Agent is working…" cover, which sits exactly on it (measured live: bar
      bottom 739.1, band top 735.1). 14px puts the line ~4px clear of the box, so
      the separator stays visible while the agent runs. */
-  margin: 0 -8px 14px;
+  margin: 0 calc(-1 * var(--zs-sp-4)) var(--zs-sp-7);
   width: auto;
   /* The card's corner radius is 28px and the bar sits flush with its top edge,
      so the bar's outermost controls land inside the corner arc. With the
      generic 16px padding the Discord button ended up 8px from the card edge and
      7.3px from its top - its top-right corner falls OUTSIDE the rounded rect and
-     was being sliced off by the card's `overflow-clip` (measured live). 24px
-     puts both ends 16px in from the card edge, which clears the arc with room to
-     spare and keeps the controls clear of the left curve. Same problem, and same
-     fix, as the Meta AI rule below. */
-  padding-left: 24px;
-  padding-right: 24px;
+     was being sliced off by the card's `overflow-clip` (measured live). One
+     step in from the base inset puts both ends 16px in from the card edge,
+     which clears the arc with room to spare and keeps the controls clear of the
+     left curve. Same problem, and same fix, as the Meta AI rule below. Expressed
+     as a token re-point so the padding itself lives in one place (the generic
+     rules above). */
+  --zs-bar-inset: var(--zs-sp-10);
 }
 /* The input row's wrapper carries -my-2.5, so its painted box overflows its grid
    row by 10px top and bottom. The card only has 5px of vertical padding and
@@ -141,7 +203,9 @@ html.zs-light #zs-bar.zs-bar-anchored {
    into - and was sliced by - the card's bottom edge ("Agent is working…"). Give
    the card enough bottom padding to clear that overhang, only while our bar is
    inside it. */
-[class*="composer-surface"]:has(> #zs-bar.zs-prov-chatgpt) { padding-bottom: 12px; }
+[class*="composer-surface"]:has(> #zs-bar.zs-prov-chatgpt) {
+  padding-bottom: var(--zs-sp-6);
+}
 
 /* ChatGPT 2026-11: the composer-surface grid was replaced by a flex-column
    ComposerLayoutRoot and the bar mounts as its first child. The eyebrow rule
@@ -150,10 +214,11 @@ html.zs-light #zs-bar.zs-bar-anchored {
    the composer upward and lifts the page's "Scroll to bottom" button with it,
    so the two never overlap. */
 [class*='ComposerLayoutRoot'] > #zs-bar.zs-bar-inline.zs-bar-inside.zs-prov-chatgpt {
+  /* No corner arc to clear here (the bar is a flex child inside the card), so
+     the 24px inset above is not needed - back to the scale's base inset. */
+  --zs-bar-inset: var(--zs-sp-8);
   grid-area: auto;
   margin: 0;
-  padding-left: 16px;
-  padding-right: 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 html.zs-light [class*='ComposerLayoutRoot'] > #zs-bar.zs-bar-inline.zs-bar-inside.zs-prov-chatgpt {
@@ -162,14 +227,15 @@ html.zs-light [class*='ComposerLayoutRoot'] > #zs-bar.zs-bar-inline.zs-bar-insid
 
 /* Meta AI's composer card has a large corner radius (rounded-32 = 32px), so the
    full-width anchored bar's left/right ends run under the curve - the controls
-   crowd the rounding. Inset the content by ~the
-   radius so both edges clear the corners cleanly. */
-#zs-bar.zs-bar-anchored.zs-prov-meta { padding-left: 30px; padding-right: 30px; }
+   crowd the rounding. Inset the content by ~the radius so both edges clear the
+   corners cleanly; one step wider than ChatGPT's arc. */
+#zs-bar.zs-bar-anchored.zs-prov-meta { --zs-bar-inset: var(--zs-sp-11); }
 
 .zs-free {
-  font-size: 9.5px; font-weight: 500; letter-spacing: 0.2px;
+  font-size: var(--zs-text-3xs); font-weight: var(--zs-w-medium);
+  letter-spacing: 0.2px;
   color: rgba(255, 255, 255, 0.55); background: none; border: none;
-  padding: 0; margin-left: 3px; vertical-align: middle;
+  padding: 0; margin-left: var(--zs-sp-1); vertical-align: middle;
 }
 
 /* provider instability warning (Gemini / Kimi): a small amber pill that FLOATS
@@ -179,12 +245,13 @@ html.zs-light [class*='ComposerLayoutRoot'] > #zs-bar.zs-bar-inline.zs-bar-insid
 #zs-unstable {
   position: fixed; z-index: 2147483601;
   display: inline-flex; align-items: center; cursor: pointer;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;
+  font-size: var(--zs-text-2xs); font-weight: var(--zs-w-bold);
+  letter-spacing: 0.3px; white-space: nowrap;
   color: #fbbf24; background: rgba(28, 24, 12, 0.97);
-  border: 1px solid rgba(251, 191, 36, 0.4); border-radius: 6px;
-  padding: 3px 8px; line-height: 1.3;
+  border: 1px solid rgba(251, 191, 36, 0.4); border-radius: var(--zs-r-xs);
+  padding: var(--zs-sp-1) var(--zs-sp-4); line-height: var(--zs-lh-tight);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
-  transition: background 0.14s ease;
+  transition: background var(--zs-dur) var(--zs-ease);
 }
 #zs-unstable:hover { background: rgba(44, 37, 16, 0.98); }
 html.zs-light #zs-unstable {
@@ -196,12 +263,12 @@ html.zs-light #zs-unstable {
 /* state line: takes the slack, single line, ellipsis if it can't fit */
 #zs-state {
   flex: 1; min-width: 0;
-  display: flex; align-items: center; gap: 6px;
-  font-size: 11.5px; line-height: 1.3; opacity: 0.85;
+  display: flex; align-items: center; gap: var(--zs-sp-3);
+  font-size: var(--zs-text-sm); line-height: var(--zs-lh-tight); opacity: 0.85;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .zs-state-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-#zs-state b { font-weight: 700; opacity: 1; color: #c7d2fe; }
+#zs-state b { font-weight: var(--zs-w-bold); opacity: 1; color: #c7d2fe; }
 #zs-state.zs-state-warn { opacity: 1; color: #fca5a5; }
 #zs-state.zs-state-warn b { color: #fecaca; }
 #zs-bar.tone-active #zs-state b { color: #6ee7b7; }
@@ -209,10 +276,13 @@ html.zs-light #zs-unstable {
 /* primary action button (Start) */
 #zs-action {
   flex: none;
-  padding: 7px 13px;
-  border-radius: 9px; border: 1px solid transparent;
-  font-size: 12.5px; font-weight: 700; cursor: pointer; white-space: nowrap;
-  transition: filter 0.15s ease, background 0.15s ease;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: var(--zs-control-h);
+  padding: var(--zs-sp-3) var(--zs-sp-6);
+  border-radius: var(--zs-r-md); border: 1px solid transparent;
+  font-size: var(--zs-text-lg); font-weight: var(--zs-w-bold);
+  cursor: pointer; white-space: nowrap;
+  transition: filter 0.15s var(--zs-ease), background 0.15s var(--zs-ease);
   /* The label's "▶" (U+25B6) has both a text and an emoji presentation. On sites
      whose font stack has no text glyph for it (ChatGPT), the browser falls back
      to the colour emoji font and the arrow renders as a blue emoji instead of a
@@ -246,10 +316,12 @@ html.zs-light #zs-unstable {
 /* stop button (replaces the action button while the agent is busy) */
 #zs-stop {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
-  height: 32px; padding: 0 14px;
-  background: #eab308; color: #000; border: 1px solid rgba(234, 179, 8, 0.75); border-radius: 18px;
-  font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap;
-  transition: background 0.14s ease;
+  height: var(--zs-control-h); padding: 0 var(--zs-sp-7);
+  background: #eab308; color: #000; border: 1px solid rgba(234, 179, 8, 0.75);
+  border-radius: var(--zs-r-pill);
+  font-size: var(--zs-text-md); font-weight: var(--zs-w-bold);
+  cursor: pointer; white-space: nowrap;
+  transition: background var(--zs-dur) var(--zs-ease);
 }
 #zs-stop[hidden] { display: none; }
 #zs-stop:hover { background: #facc15; }
@@ -263,36 +335,42 @@ html.zs-light #zs-unstable {
 /* Target and model selectors follow the Snapgent header pill style. */
 .zs-target-wrap {
   flex: none; position: relative; display: inline-flex; align-items: center;
-  height: 32px; padding: 0 10px 0 12px;
+  height: var(--zs-control-h);
+  padding: 0 var(--zs-sp-5) 0 var(--zs-sp-6);
   color: #d0d0d6; background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(234, 179, 8, 0.75); border-radius: 18px;
+  border: 1px solid rgba(234, 179, 8, 0.75); border-radius: var(--zs-r-pill);
 }
 #zs-target {
   appearance: none; -webkit-appearance: none;
-  max-width: min(130px, 30vw); padding: 0 16px 0 0;
+  max-width: min(130px, 30vw); padding: 0 var(--zs-sp-8) 0 0;
   color: inherit; background: transparent; border: 0; outline: 0;
-  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  font: inherit; font-size: var(--zs-text-md); font-weight: var(--zs-w-semibold);
+  cursor: pointer;
 }
 #zs-target option { color: #1f2937; background: #fff; }
 #zs-target:disabled { opacity: 0.65; cursor: not-allowed; }
 #zs-target-btn {
-  max-width: min(130px, 30vw); padding: 0 16px 0 0;
+  max-width: min(130px, 30vw); padding: 0 var(--zs-sp-8) 0 0;
   color: inherit; background: transparent; border: 0; outline: 0;
-  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  font: inherit; font-size: var(--zs-text-md); font-weight: var(--zs-w-semibold);
+  cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left;
 }
-#zs-target-btn:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.4); outline-offset: 4px; border-radius: 6px; }
+#zs-target-btn:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.4); outline-offset: var(--zs-sp-2);
+  border-radius: var(--zs-r-xs);
+}
 
 /* MCP target dropdown: same shell as the Switch AI menu */
 #zs-target-menu {
   position: fixed; z-index: 2147483647;
   box-sizing: border-box;
   width: min(220px, calc(100vw - 16px)); min-width: 0; overflow-y: auto;
-  padding: 0 0 6px;
+  padding: 0 0 var(--zs-sp-3);
   background: #161618; color: #ececee;
-  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--zs-r-lg);
   box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
-  font-size: 12px; animation: zs-pop 0.16s ease-out;
+  font-size: var(--zs-text-md); animation: zs-pop 0.16s ease-out;
   scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.22) transparent;
 }
 #zs-target-menu[hidden] { display: none; }
@@ -302,16 +380,17 @@ html.zs-light #zs-target-menu {
   background: #ffffff; color: #1f2937; border-color: rgba(0, 0, 0, 0.1);
   box-shadow: 0 16px 44px rgba(0, 0, 0, 0.18); scrollbar-color: rgba(0,0,0,0.25) transparent;
 }
-.zs-target-wrap svg { position: absolute; right: 8px; pointer-events: none; opacity: 0.65; }
+.zs-target-wrap svg { position: absolute; right: var(--zs-sp-4); pointer-events: none; opacity: 0.65; }
 
 /* model switcher: names the current AI and opens the provider menu */
 #zs-switch {
-  flex: none; display: flex; align-items: center; gap: 5px;
-  height: 32px; padding: 0 12px;
+  flex: none; display: flex; align-items: center; gap: var(--zs-sp-2);
+  height: var(--zs-control-h); padding: 0 var(--zs-sp-6);
   background: rgba(255, 255, 255, 0.04); color: #d0d0d6;
-  border: 1px solid rgba(234, 179, 8, 0.75); border-radius: 18px;
-  font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
-  transition: background 0.14s ease;
+  border: 1px solid rgba(234, 179, 8, 0.75); border-radius: var(--zs-r-pill);
+  font-size: var(--zs-text-md); font-weight: var(--zs-w-semibold);
+  cursor: pointer; white-space: nowrap;
+  transition: background var(--zs-dur) var(--zs-ease);
 }
 #zs-switch:hover { background: rgba(255, 255, 255, 0.11); }
 #zs-switch svg { opacity: 0.55; }
@@ -319,40 +398,43 @@ html.zs-light #zs-target-menu {
 @media (max-width: 560px) {
   #zs-bar {
     flex-wrap: wrap;
-    gap: 6px;
-    padding: 6px 8px;
+    gap: var(--zs-sp-3);
+    padding: var(--zs-sp-3) var(--zs-sp-4);
   }
   #zs-state {
     order: 10;
     flex: 1 0 100%;
-    min-height: 14px;
-    font-size: 10.5px;
+    min-height: var(--zs-sp-7);
+    font-size: var(--zs-text-xs);
   }
   #zs-action, #zs-stop {
     flex: 1 1 auto;
     min-width: 0;
     max-width: 100%;
-    min-height: 36px;
-    padding: 7px 9px;
-    font-size: 11px;
+    min-height: var(--zs-control-h-touch);
+    padding: var(--zs-sp-3) var(--zs-sp-4);
+    font-size: var(--zs-text-xs);
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  #zs-stop { height: auto; padding: 0 12px; border-radius: 18px; }
+  #zs-stop {
+    height: auto; padding: 0 var(--zs-sp-6);
+    border-radius: var(--zs-r-pill);
+  }
   .zs-target-wrap, #zs-switch {
     max-width: 38%;
     min-width: 0;
-    min-height: 36px;
+    min-height: var(--zs-control-h-touch);
     height: auto;
-    padding-left: 9px;
-    padding-right: 9px;
+    padding-left: var(--zs-sp-4);
+    padding-right: var(--zs-sp-4);
   }
-  #zs-target { max-width: 100%; min-width: 0; font-size: 11px; }
-  #zs-switch { font-size: 11px; }
+  #zs-target { max-width: 100%; min-width: 0; font-size: var(--zs-text-xs); }
+  #zs-switch { font-size: var(--zs-text-xs); }
 }
 
 @media (max-width: 400px) {
-  #zs-bar { gap: 5px; padding: 5px 6px; }
+  #zs-bar { gap: var(--zs-sp-2); padding: var(--zs-sp-2) var(--zs-sp-3); }
   .zs-target-wrap, #zs-switch { max-width: 42%; }
 }
 
@@ -571,12 +653,12 @@ html.zs-light .zs-mcp-toggle { background: rgba(0, 0, 0, 0.18); }
    so the masked input simply looks empty. */
 #zs-input-cover {
   position: fixed; z-index: 2147483500;
-  display: flex; align-items: center; gap: 8px;
-  box-sizing: border-box; padding-left: 16px;
-  border-radius: 14px;
+  display: flex; align-items: center; gap: var(--zs-sp-4);
+  box-sizing: border-box; padding-left: var(--zs-sp-8);
+  border-radius: var(--zs-r-2xl);
   background: #ffffff;
   color: rgba(140, 140, 150, 0.9);
-  font-size: 12px; font-family: ui-sans-serif, "Segoe UI", sans-serif;
+  font-size: var(--zs-text-md); font-family: var(--zs-font-ui);
   white-space: nowrap; overflow: hidden;
   /* Capture pointer events: the cover sits over the composer while the agent
      works, so eating clicks/focus stops the user from clicking THROUGH it into
