@@ -324,6 +324,48 @@ What this round fixed and where it is visible in the diagnostics (`#zs-diag-log`
 The quota blocks are the provider refusing the account, not the harness: the
 same tabs answer again once the limit resets.
 
+## Live verification (2026-11-15, second run)
+
+Same script, `--rounds 1` (one COLD + one WARM pass per provider) after the
+bar-seating fix and the token refactor landed. Providers were run in batches of
+four and their tabs closed between batches, to keep a 7.6 GB machine from
+swapping; the numbers are still one pinned prompt per provider through the real
+A2A facade.
+
+| Provider | Cold | Warm | Result |
+| --- | --- | --- | --- |
+| claude | 73.9s | 7.2s | `PONG` |
+| gemini | 19.2s | 14.4s | `PONG` |
+| deepseek | 20.8s | 6.4s | `PONG` |
+| chatgpt | 46.8s | 12.8s | `PONG` (first attempt refused: the tab was an old conversation; closed it, then pass) |
+| glm | 33.1s | 9.7s | `PONG` |
+| kimi | 31.2s | 11.9s | `PONG` |
+| mistral | 103.4s | 35.2s | `PONG` |
+| meta | 31.1s | 4.8s | `PONG` |
+| qwen | 41.4s | 6.8s | `PONG` — the earlier daily-limit block has reset |
+| arena | 30.0s | 7.4s | `PONG` (Battle-mode restore fix holds) |
+| rudder | 27.3s | 9.2s | `PONG` |
+| grok | 62.9s / 100.6s | 10.8s / 100.0s | **FAIL**, and not a quota block |
+
+Grok, in detail — this is the one open item. Two separate shapes, both after the
+site's composer rewrite:
+
+- `Grok send button did not become available` on the first pair of rounds, then
+  `Could not start a Snapgent session in this chat` on the retry.
+- Its own diagnostics (`#zs-diag-log`) end at
+  `start.noToolCall {"kind":"empty","textLen":0}`, i.e. the prompt never reached
+  the editor. The composer is now `div.tiptap.ProseMirror` **plus** a bare
+  `textarea`; `providers/grok.js` already lists `.tiptap[contenteditable="true"]`,
+  so the editor is found but the write does not stick — the same class of bug as
+  Meta's hidden mirror textarea, which had to be written through the visible
+  Lexical editor instead.
+- Grok was quota-blocked in the previous run, so this breakage is newly visible,
+  not newly caused: it reproduced on a fresh tab with no limit banner present.
+
+Every other provider passes cold and warm, including the two that were blocked
+earlier today (qwen, and grok's own quota message). The quota-aware skip did not
+fire this time because no site answered with a limit message.
+
 ## In-page bar placement (2026-11-15)
 
 Measured live on each site with the bar's own geometry (`#zs-bar` rect against the
