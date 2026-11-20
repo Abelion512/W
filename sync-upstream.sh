@@ -19,8 +19,8 @@ PURGED=(
   MacOS_Start.command
 )
 
-if ! git diff-index --quiet HEAD --; then
-  echo "ERROR: working tree is dirty. Commit or stash first."
+if ! git diff-index --quiet HEAD -- || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+  echo "ERROR: working tree is dirty (untracked files count). Commit or stash first."
   exit 1
 fi
 
@@ -42,5 +42,5 @@ if ! git diff-index --quiet HEAD --; then
   git commit -m "chore: re-purge upstream-renamed artifacts"
 fi
 
-python3 -m unittest
+python3 -m unittest discover -s tests || exit 1
 echo "Sync complete. Run 'bash Linux_Start.sh' as the smoke test."

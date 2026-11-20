@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import bridge
 
@@ -323,6 +323,39 @@ class BridgeAuthTests(unittest.IsolatedAsyncioTestCase):
         # Non-ASCII still compares correctly against itself; only the crash goes away.
         self.assertTrue(bridge.token_matches("\u00e9", "\u00e9"))
         self.assertFalse(bridge.token_matches("\ud800", "secret"))  # lone surrogate
+
+    def test_empty_token_file_is_regenerated_not_disabled(self):
+        """An empty token file must not silently turn token auth off."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bridge_token"
+            path.write_text("\n", encoding="utf-8")
+            token, _ = bridge.load_or_create_token(path, "bridge token")
+            self.assertIsInstance(token, str)
+            self.assertTrue(token)
+            self.assertEqual(path.read_text(encoding="utf-8").strip(), token)
+
+    def test_stale_token_temp_file_does_not_block_rotation(self):
+        """A leftover .tmp-<pid> file must not make every rotation fail."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bridge_token"
+            stale = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+            stale.write_text("stale", encoding="utf-8")
+            bridge.write_token_file(path, "new-secret")
+            self.assertEqual(path.read_text(encoding="utf-8").strip(), "new-secret")
+
+    def test_unbracketed_ipv6_loopback_host_is_allowed(self):
+        self.assertTrue(bridge.host_allowed("[::1]:17613"))
+        self.assertTrue(bridge.host_allowed("::1"))
+
+    def test_extension_origin_pattern_covers_all_browsers_and_needs_an_id(self):
+        pattern = bridge.EXTENSION_ORIGIN_PATTERN
+        for origin in (
+            "chrome-extension://abcdefghijklmnop",
+            "moz-extension://abcdefgh",
+            "safari-web-extension://abcdefgh",
+        ):
+            self.assertIsNotNone(pattern.match(origin), origin)
+        self.assertIsNone(pattern.match("chrome-extension://"))
 
     def test_rotate_token_refuses_when_pinned_or_disabled(self):
         with patch.dict(os.environ, {bridge.TOKEN_ENV: "pinned", bridge.AUTH_DISABLE_ENV: ""}):
@@ -664,6 +697,41 @@ class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await asyncio.wait_for(task, 2), {"ok": True, "text": "ok"})
         self.assertFalse(manager._context_only)
 
+    async def test_context_only_does_not_block_other_clients(self):
+        """A context-only task must not take tools away from unrelated tabs."""
+        manager = bridge.Bridge()
+        owner = FakeClient()
+        other = FakeClient()
+        manager.clients.update({owner, other})
+        manager._last_client = owner
+        task = asyncio.create_task(
+            manager.submit_prompt("summarize", 5, {"contextOnly": True})
+        )
+        await self._await_send(owner)
+        await manager._handle_request(
+            other,
+            {
+                "id": 12,
+                "type": "call_tool",
+                "name": "read_file",
+                "arguments": {"path": "README.md"},
+            },
+        )
+        replies = [m for m in other.sent if m.get("type") == "tool_result"]
+        self.assertEqual(len(replies), 1)
+        self.assertNotEqual(replies[0].get("kind"), "context_only")
+        await manager._handle_request(
+            owner,
+            {
+                "id": 13,
+                "type": "prompt_result",
+                "prompt_id": owner.sent[0]["id"],
+                "ok": True,
+                "text": "ok",
+            },
+        )
+        self.assertEqual(await asyncio.wait_for(task, 2), {"ok": True, "text": "ok"})
+
     async def test_submit_prompt_requires_extension(self):
         result = await bridge.Bridge().submit_prompt("hello", 1)
         self.assertFalse(result["ok"])
@@ -717,6 +785,85 @@ class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict("os.environ", {"ZS_A2A_TOKEN": "tok", "ZS_A2A_PORT": "0"}):
             server = bridge.build_a2a_server(bridge.Bridge(), asyncio.new_event_loop())
         self.assertEqual(server.token, "tok")
+
+
+class AuditRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stdout_reader_ignores_non_object_json(self):
+        """A JSON array/string line must not kill the stdout reader task."""
+        server = bridge.MCPServer("mock", {"command": "x", "args": [], "env": {}})
+        lines = [
+            b'"just a string"\n',
+            b'[1, 2, 3]\n',
+            b'{"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n',
+            b'',
+        ]
+
+        async def readline():
+            return lines.pop(0)
+
+        server.process = SimpleNamespace(
+            stdout=SimpleNamespace(readline=readline), returncode=None
+        )
+        future = asyncio.get_running_loop().create_future()
+        server._pending[1] = future
+        await server._read_stdout()
+        self.assertTrue(future.done())
+        self.assertEqual(future.result()["result"], {"ok": True})
+
+    async def test_tool_result_tolerates_malformed_mcp_content(self):
+        """A malformed MCP result must still produce a tool_result frame."""
+        manager = bridge.Bridge()
+        client = FakeClient()
+        server = SimpleNamespace(
+            alive=True,
+            tools=[{"name": "echo"}],
+            call_tool=AsyncMock(return_value={"content": 123}),
+        )
+        manager.servers = {"mock": server}
+        await manager._call_tool(
+            client, {"id": 1, "type": "call_tool", "name": "echo", "arguments": {}}
+        )
+        replies = [m for m in client.sent if m.get("type") == "tool_result"]
+        self.assertEqual(len(replies), 1)
+
+    async def test_monitor_keeps_running_when_server_map_changes(self):
+        """Concurrent add/remove must not kill the recovery monitor."""
+        manager = bridge.Bridge()
+
+        class MutatingServer:
+            server_id = "mut"
+            alive = False
+            next_restart_at = 0.0
+            error = None
+            restart_attempts = 0
+
+            async def start(self):
+                manager.servers.clear()
+                return True
+
+            def record_restart_failure(self):
+                return 5.0
+
+        manager.servers = {"mut": MutatingServer()}
+        restarted = asyncio.Event()
+
+        async def broadcast(message):
+            restarted.set()
+
+        manager.broadcast = broadcast
+        manager._rebuild_catalog = lambda: None
+        manager._log_health = lambda: None
+        original_sleep = bridge.asyncio.sleep
+
+        async def instant_sleep(seconds):
+            await original_sleep(0)
+
+        with patch.object(bridge.asyncio, "sleep", new=instant_sleep):
+            task = asyncio.create_task(bridge._monitor_servers(manager))
+            await asyncio.wait_for(restarted.wait(), 2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
 
 
 if __name__ == "__main__":

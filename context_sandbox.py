@@ -14,6 +14,7 @@ stdlib only.
 """
 
 import shutil
+from itertools import islice
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -34,7 +35,12 @@ def _safe_relpath(raw: Any, root: Path) -> Path:
         raise ContextSandboxError("absolute paths are not allowed")
     if any(part in ("..", "") for part in candidate.parts):
         raise ContextSandboxError("parent segments are not allowed")
-    resolved = (root / candidate).resolve()
+    try:
+        resolved = (root / candidate).resolve()
+    except (OSError, ValueError) as error:
+        # NUL bytes and other malformed names must be skipped, not abort the
+        # whole task: prepare()'s contract is that bad entries go to skipped.
+        raise ContextSandboxError(str(error)) from error
     if resolved != root and root not in resolved.parents:
         raise ContextSandboxError("path escapes the repository root")
     return candidate
@@ -80,13 +86,16 @@ def prepare(
     dest_root = Path(dest_root) if dest_root is not None else root / ".snapgent" / "context"
     dest = (dest_root / _safe_task_id(task_id)).resolve()
     dest.mkdir(parents=True, exist_ok=True)
+    # Context files can contain secrets handed to a web model. Keep the task
+    # directory and its copies readable only by this user.
+    dest.chmod(0o700)
 
     copied: List[str] = []
     skipped: List[Dict[str, str]] = []
     entries: List[Dict[str, Any]] = []
     total = 0
 
-    for raw in list(files)[:max_files]:
+    for raw in islice(files, max_files):
         try:
             rel = _safe_relpath(raw, root)
         except ContextSandboxError as error:
@@ -110,7 +119,9 @@ def prepare(
         target = dest / rel
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.chmod(0o700)
             shutil.copyfile(source, target)
+            target.chmod(0o600)
             text = source.read_text(encoding="utf-8", errors="replace")
         except OSError as error:
             skipped.append({"path": rel.as_posix(), "reason": str(error)})

@@ -125,7 +125,7 @@ def run_checks(
                     "seconds": round(time.time() - started, 2),
                 }
             )
-        except ValueError as error:  # shlex.split: unbalanced quotes
+        except (ValueError, IndexError) as error:  # unbalanced quotes, empty command
             results.append(
                 {
                     "command": command,
@@ -228,12 +228,24 @@ def _write_ledger(result: Dict[str, Any]) -> None:
         result["ledger_path"] = None
 
 
+def _a2a_token() -> str:
+    """Resolve the A2A token the same way the bridge does."""
+    env_token = (os.environ.get("ZS_A2A_TOKEN") or "").strip()
+    if env_token:
+        return env_token
+    override = (os.environ.get("ZS_A2A_TOKEN_FILE") or "").strip()
+    path = Path(override).expanduser() if override else TOKEN_PATH
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def a2a_submit(prompt: str, metadata: Dict[str, Any], timeout: float = DEFAULT_TIMEOUT) -> Dict[str, Any]:
     """Send one prompt to the local A2A facade and return its reply."""
-    try:
-        token = TOKEN_PATH.read_text(encoding="utf-8").strip()
-    except OSError as error:
-        return {"ok": False, "error": f"could not read the A2A token: {error}"}
+    token = _a2a_token()
+    if not token:
+        return {"ok": False, "error": "could not read the A2A token"}
     body = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -261,6 +273,11 @@ def a2a_submit(prompt: str, metadata: Dict[str, Any], timeout: float = DEFAULT_T
             payload = json.loads(response.read().decode("utf-8"))
     except Exception as error:  # noqa: BLE001 - surface transport failures
         return {"ok": False, "error": str(error)}
+    if payload.get("error"):
+        error = payload["error"]
+        detail = error.get("message") if isinstance(error, dict) else str(error)
+        code = error.get("code", "") if isinstance(error, dict) else ""
+        return {"ok": False, "error": f"JSON-RPC {code}: {detail}".strip()}
     task = payload.get("result") or {}
     state = (task.get("status") or {}).get("state")
     artifacts = task.get("artifacts") or []

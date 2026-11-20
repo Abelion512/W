@@ -36,8 +36,8 @@
   // ── Diagnostics ───────────────────────────────────────────────────────────
   // Persistent, lightweight breadcrumb log of the agentic loop's key decisions
   // (sends, response kinds, tool start/end, resumes, stops). Read back from the
-  // console (filter "[zs-diag]") or window.__zsDiag (also mirrored onto a hidden
-  // DOM node for a main-world inspector). Each entry carries a turn snapshot.
+  // console (filter "[zs-diag]"). Kept in this closure only: this code runs in
+  // the page world, so a DOM/global mirror would let the host site read prompts.
   const ZS_DIAG_MAX = 300;
   const _diag = [];
   function diag(event, data) {
@@ -47,12 +47,6 @@
     _diag.push(e);
     if (_diag.length > ZS_DIAG_MAX) _diag.shift();
     try { console.log("[zs-diag]", e.iso, event, JSON.stringify({ ...data, ...snap })); } catch {}
-    try {
-      let n = document.getElementById("zs-diag-log");
-      if (!n) { n = document.createElement("script"); n.type = "application/json"; n.id = "zs-diag-log"; (document.body || document.documentElement).appendChild(n); }
-      n.textContent = JSON.stringify(_diag);
-    } catch {}
-    try { window.__zsDiag = _diag; } catch {}
   }
   P.init({ diag });
 
@@ -355,7 +349,7 @@
 
   async function submitAndGetBase(text, images) {
     captureSendToken();
-    diag("send", { text: String(text).slice(0, 60), busy: P.isBusyNow() });
+    diag("send", { chars: String(text).length, busy: P.isBusyNow() });
     A.injecting = true;
     ui.inputCover(true);
     try {
@@ -1194,8 +1188,10 @@
     const timeout = name === "execute_luau" ? 20000 : 120000;
     // Hard watchdog: even if the background worker never answers, the loop
     // gets a definitive result and continues.
-    const hardCap = new Promise((res) =>
-      setTimeout(() => res({ ok: false, kind: "timeout", error: "no response from the extension worker" }), timeout + 30000));
+    let hardCapTimer;
+    const hardCap = new Promise((res) => {
+      hardCapTimer = setTimeout(() => res({ ok: false, kind: "timeout", error: "no response from the extension worker" }), timeout + 30000);
+    });
     // Stop watcher: a blocking tool (e.g. wait_job_finished) would otherwise keep
     // the loop awaiting the bridge for up to minutes, leaving the input locked and
     // the Stop button stuck. When the user halts (A.stop), abandon the wait within
@@ -1206,6 +1202,7 @@
       stopTimer = setInterval(() => { if (A.stop) res({ ok: false, kind: "stopped" }); }, 150);
     });
     let r = await Promise.race([bg({ type: "call_tool", name, arguments: args, timeout, server: selectedTargetId }), hardCap, stopWatch]);
+    clearTimeout(hardCapTimer);
     clearInterval(stopTimer);
     if (r && r.kind === "stopped") return "(stopped by user)";
     if (!r) return ZS.FEEDBACK.bridgeOffline;

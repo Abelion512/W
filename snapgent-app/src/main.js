@@ -79,10 +79,6 @@ async function handleRuntimeMessage(msg) {
     case "status": return statusObj();
     case "list_tools": return { ok: true, tools: core.catalog };
     case "call_tool": return core.callTool(msg);
-    case "restart_mcp": {
-      const r = await core.restart(mcpConfig());
-      return { ...r, tools: core.catalog, servers: core.serverStatus() };
-    }
     case "reconnect": return { ok: true };
     default: return { ok: false, error: "unknown message" };
   }
@@ -104,7 +100,9 @@ function trustedSender(e) {
 }
 // add_server/remove_server do not exist in the built-in bridge: pages can never
 // make the app launch arbitrary programs.
-const ALLOWED_RUNTIME = new Set(["status", "list_tools", "call_tool", "restart_mcp", "reconnect"]);
+// restart_mcp is deliberately absent: page JS on an allow-listed host can reach
+// this IPC through the chrome shim, and must not be able to respawn MCP servers.
+const ALLOWED_RUNTIME = new Set(["status", "list_tools", "call_tool", "reconnect"]);
 
 ipcMain.handle("zs:runtime", (e, msg) => {
   if (!trustedSender(e)) return { ok: false, error: "untrusted sender" };
@@ -144,19 +142,31 @@ function addHistory(url, title) {
   writeJson(HISTORY_FILE, history);
   if (win && !win.isDestroyed()) win.webContents.send("app:history", history);
 }
-ipcMain.handle("app:get-history", () => history);
-ipcMain.handle("app:clear-history", () => { history = []; writeJson(HISTORY_FILE, history); return true; });
-ipcMain.handle("app:navigate", (_e, url) => { if (view && /^https?:\/\//i.test(String(url))) view.webContents.loadURL(url); });
-ipcMain.handle("app:back", () => { if (view && view.webContents.canGoBack()) view.webContents.goBack(); });
-ipcMain.handle("app:forward", () => { if (view && view.webContents.canGoForward()) view.webContents.goForward(); });
-ipcMain.handle("app:reload", () => { if (view) view.webContents.reload(); });
-ipcMain.handle("app:get-workspace", () => workspace);
-ipcMain.handle("app:pick-workspace", async () => {
+// Same boundary as zs:* handlers: only the toolbar window may drive navigation
+// and workspace selection, never a renderer inside the AI view.
+function trustedToolbar(e) {
+  return !!(win && !win.isDestroyed() && e.sender === win.webContents);
+}
+ipcMain.handle("app:get-history", (e) => trustedToolbar(e) ? history : []);
+ipcMain.handle("app:clear-history", (e) => {
+  if (!trustedToolbar(e)) return false;
+  history = []; writeJson(HISTORY_FILE, history); return true;
+});
+ipcMain.handle("app:navigate", (e, url) => {
+  if (!trustedToolbar(e)) return;
+  if (view && /^https?:\/\//i.test(String(url))) view.webContents.loadURL(url);
+});
+ipcMain.handle("app:back", (e) => { if (trustedToolbar(e) && view && view.webContents.canGoBack()) view.webContents.goBack(); });
+ipcMain.handle("app:forward", (e) => { if (trustedToolbar(e) && view && view.webContents.canGoForward()) view.webContents.goForward(); });
+ipcMain.handle("app:reload", (e) => { if (trustedToolbar(e) && view) view.webContents.reload(); });
+ipcMain.handle("app:get-workspace", (e) => trustedToolbar(e) ? workspace : "");
+ipcMain.handle("app:pick-workspace", async (e) => {
+  if (!trustedToolbar(e)) return workspace;
   const r = await dialog.showOpenDialog(win, { properties: ["openDirectory"], title: "Choose the project folder" });
   if (r.canceled || !r.filePaths[0]) return workspace;
   workspace = r.filePaths[0];
   store.__workspace = workspace; writeJson(STORE_FILE, store);
-  core.restart(mcpConfig());
+  await core.restart(mcpConfig());
   win.webContents.send("app:workspace", workspace);
   return workspace;
 });

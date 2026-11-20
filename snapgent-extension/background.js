@@ -35,6 +35,9 @@ const CATEGORY_TIER = {
   classify: "light",
   "code-edit": "balanced",
   debug: "balanced",
+  realtime: "balanced",
+  chat: "light",
+  orchestrate: "deep",
   review: "deep",
   architecture: "deep",
   security: "deep",
@@ -56,7 +59,8 @@ const CATEGORY_PROVIDERS = {
   chat: ["rudder", "mistral", "gemini"],
   orchestrate: ["chatgpt", "claude", "kimi"],
 };
-// Declared complexity beats the category default when both are present.
+// A category's provider list outranks complexity on purpose; see docs/model-routing.md.
+// Complexity only picks the tier when no category list applies.
 const COMPLEXITY_TIER = { low: "light", medium: "balanced", high: "deep" };
 const PROVIDER_HOSTS = {
   deepseek: ["chat.deepseek.com"],
@@ -181,11 +185,20 @@ function readBridgeToken() {
 // default `authRequired = false` and redial a bridge that already refused us.
 let lastUsage = null;
 const authReady = new Promise((resolve) => {
-  chrome.storage.local.get([AUTH_STATE_KEY, "lastUsage"], (stored) => {
-    authRequired = !!(stored && stored[AUTH_STATE_KEY]);
-    lastUsage = (stored && stored.lastUsage) || null;
-    resolve();
-  });
+  // Mirror readBridgeToken's timeout: a storage callback that never fires must
+  // not block every future dial for the life of the worker.
+  let settled = false;
+  const finish = () => { if (!settled) { settled = true; resolve(); } };
+  setTimeout(finish, 2000);
+  try {
+    chrome.storage.local.get([AUTH_STATE_KEY, "lastUsage"], (stored) => {
+      authRequired = !!(stored && stored[AUTH_STATE_KEY]);
+      lastUsage = (stored && stored.lastUsage) || null;
+      finish();
+    });
+  } catch {
+    finish();
+  }
 });
 
 async function connect() {
@@ -246,6 +259,8 @@ async function connect() {
     bridgeStatusCache = null;
     bridgeStatusAt = 0;
     stopHeartbeat();
+    // A dropped socket will never deliver prompt_result or cancel_prompt.
+    promptTabs.clear();
     failAllPending("bridge connection closed");
     broadcastStatus();
     // 1008 is the bridge refusing our token, and redialling just repeats the
@@ -500,7 +515,7 @@ function handleBridgeMessage(msg) {
 // content script answers later via an "a2a_result" runtime message. An MV3
 // worker eviction between the two hops is expected and handled by reconnect.
 // promptId → tabId, so a bridge-side timeout can reach the right tab. Bounded:
-// a result or a cancel removes the entry, and stale ones expire.
+// a result or a cancel removes the entry, and a dropped socket clears the rest.
 const promptTabs = new Map();
 function cancelPrompt(promptId) {
   const tabId = promptTabs.get(promptId);

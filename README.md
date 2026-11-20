@@ -287,16 +287,30 @@ snapgent-full/
 │   ├── manifest.json          # Manifest V3 configuration
 │   └── test-*.js              # Smoke tests
 ├── assets/                    # Project images
+├── docs/                      # Design, security/ops, and code standards
+├── scripts/                   # One-off tooling
+├── snapgent-app/              # Standalone Electron desktop app
+├── a2a_server.py              # A2A HTTP facade over bridge.submit_prompt
+├── harness_loop.py            # Harness-owned A2A retry loop
+├── context_sandbox.py         # Per-task context file sandbox
 ├── setup-config.py            # Configures the Linux workspace MCP server
 ├── config.json                # Generated locally by launchers (not tracked)
 ├── Linux_Start.sh             # Linux bridge launcher
 ├── switch-project.sh          # Switch a running bridge's workspace root
 ├── bridge.py                  # Cross-platform Python MCP bridge
 ├── bridge_auth.py             # Handshake policy: origin allowlist, token file, rotation
-├── requirements.txt           # Pinned websockets range for the bridge
+├── requirements.txt           # Pinned runtime dependency (websockets)
+├── requirements-dev.txt       # Test/static-check dependencies
+├── pyproject.toml             # pytest config
+├── .editorconfig              # Formatting baseline
 ├── workspace_mcp.py           # Workspace MCP server source (30 workspace tools)
 ├── tests/                     # Unit/protocol tests (pytest or unittest)
 │   ├── test_bridge.py         # MCP bridge protocol tests
+│   ├── test_a2a_server.py     # A2A facade tests
+│   ├── test_harness_loop.py   # Harness loop tests
+│   ├── test_context_sandbox.py / test_sandbox_hardening.py
+│   ├── test_overlay_responsive.py / test_project_switch.py
+│   ├── test_audit_regressions.py  # Audit regression tests
 │   ├── test_setup_config.py   # MCP setup helper tests
 │   └── test_workspace_mcp.py  # Workspace MCP server tests
 ├── e2e/                       # Live end-to-end scripts (need a real bridge/browser)
@@ -305,6 +319,12 @@ snapgent-full/
 │   └── a2a_matrix_live.py     # Per-provider A2A matrix, cold + warm rounds
 └── sync-upstream.sh           # Sync with upstream, keeping purged paths deleted
 ```
+
+Key design docs: [`docs/a2a-design.md`](docs/a2a-design.md),
+[`docs/harness-loop.md`](docs/harness-loop.md),
+[`docs/context-sandbox.md`](docs/context-sandbox.md),
+[`docs/linux-stability.md`](docs/linux-stability.md), and
+[`docs/security-and-ops.md`](docs/security-and-ops.md).
 
 ---
 

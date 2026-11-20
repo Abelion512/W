@@ -126,11 +126,23 @@ def load_or_create_token(
     try:
         _create_private_file(path, token)
     except FileExistsError:
-        # Another process won the first-run race; use the secret it wrote.
+        # Another process won the first-run race, or the file exists but is
+        # empty/corrupt. Use a real secret if one is there; otherwise replace
+        # the empty file. Falling back to None would disable token auth for
+        # every client, so an unreadable file is the only no-token case.
         try:
-            return path.read_text(encoding="utf-8").strip() or None, False
-        except OSError:
+            existing = path.read_text(encoding="utf-8").strip()
+        except OSError as error:
+            _notify(log_fn, f"WARNING: could not read the {label} ({error}).")
             return None, False
+        if existing:
+            return existing, False
+        try:
+            write_token_file(path, token)
+        except OSError as error:
+            _notify(log_fn, f"WARNING: could not replace the empty {label} ({error}).")
+            return None, False
+        return token, True
     except OSError as error:
         _notify(log_fn, f"WARNING: could not create the {label} ({error}).")
         return None, False
@@ -155,7 +167,9 @@ def load_auth_token(log_fn: LogFn = None) -> Tuple[Optional[str], bool]:
 
 def write_token_file(path: Path, token: str) -> None:
     """Write the token atomically with mode 0600, replacing any previous value."""
-    temp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    # Unique suffix: a leftover temp from an earlier crash must not make every
+    # later rotation fail with FileExistsError.
+    temp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{secrets.token_hex(6)}")
     try:
         _create_private_file(temp, token)
     except BaseException:
@@ -218,7 +232,8 @@ def host_allowed(host: Optional[str]) -> bool:
         if end == -1:
             return False
         name = name[1:end]
-    else:
+    elif name.count(":") == 1:
+        # host:port pair; a bare IPv6 literal (::1) has no port to strip.
         name = name.split(":", 1)[0]
     return name in ("127.0.0.1", "localhost", "::1")
 

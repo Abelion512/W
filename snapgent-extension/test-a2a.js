@@ -184,8 +184,8 @@ const until = async (cond, ms = 1000) => {
   ok("explicit 'deep' tier routes to the deep provider (ChatGPT)", deep && deep.tabId === 7);
   ok("relayed prompt labels the deep tier", deep && deep.msg.route === "deep");
 
-  // Declared complexity wins over the category default: a small code edit is a
-  // light task even though "code-edit" defaults to the balanced tier.
+  // Complexity wins when a category has no pinned provider list: a small code
+  // edit is a light task even though "code-edit" defaults to balanced.
   tabsForQuery = [
     { id: 21, active: true, url: "https://claude.ai/new" },
     { id: 22, active: false, url: "https://gemini.google.com/app" },
@@ -196,15 +196,17 @@ const until = async (cond, ms = 1000) => {
   ok("complexity 'low' downgrades a code-edit to the light tier (Gemini)", small && small.tabId === 22);
   ok("relayed prompt labels the downgraded tier", small && small.msg.route === "light");
 
-  // Category overrides pick a specialist list ahead of tier preference.
+  // A category's specialist list outranks even a high-complexity deep tier:
+  // "realtime" + "high" must still land on Grok, which can see the live page.
   tabsForQuery = [
     { id: 31, active: true, url: "https://gemini.google.com/app" },
     { id: 32, active: false, url: "https://grok.com/chat" },
   ];
   tabSends.length = 0;
-  await api.handleSubmitPrompt({ id: "p9", prompt: "today's news", metadata: { taskCategory: "realtime" } });
+  await api.handleSubmitPrompt({ id: "p9", prompt: "today's news", metadata: { taskCategory: "realtime", complexity: "high" } });
   const live = tabSends.find((s) => s.msg.type === "zs-a2a-prompt");
-  ok("category 'realtime' routes to Grok over the tier order", live && live.tabId === 32);
+  ok("category 'realtime' + 'high' still routes to Grok", live && live.tabId === 32);
+  ok("category provider list keeps its declared tier label", live && live.msg.route === "balanced");
 
   // Preferred providers are all closed -> fall back to the active tab, not the first.
   tabsForQuery = [{ id: 11, active: true, url: "https://chat.mistral.ai/chat" }];

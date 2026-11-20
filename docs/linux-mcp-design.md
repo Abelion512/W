@@ -134,7 +134,7 @@ Web AI chat                       ──extension──>  bridge.py  ──stdio
 
 Existing suites, kept green: `test_bridge.py`, `test_setup_config.py`,
 `test_vscode_mcp.py` (renamed to `test_workspace_mcp.py`). Run with
-`python3 -m unittest`.
+`python3 -m unittest discover -s tests`.
 
 New assertions:
 

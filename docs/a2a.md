@@ -267,7 +267,7 @@ ZS_A2A_PORT=19000 ZS_A2A_TOKEN=my-token bash Linux_Start.sh
 Offline (no browser, no network):
 
 ```
-python3 -m unittest
+python3 -m unittest discover -s tests
 node snapgent-extension/test-a2a.js
 ```
 
