@@ -8,8 +8,13 @@
 // even when the bridge is offline. The agentic loop must never hang waiting.
 
 // Classic service worker (no "type": "module"), so shared code is pulled in with
-// importScripts. core/pairing.js builds the handshake URL and classifies closes.
-importScripts("core/pairing.js");
+// importScripts. core/pairing.js builds the handshake URL and classifies closes;
+// core/guard.js holds the shared heartbeat/retry policy (upstream 0110dec).
+// Guard the calls so Node stub-DOM tests can evaluate this file without a worker.
+if (typeof importScripts === "function") {
+  importScripts("core/pairing.js");
+  if (typeof ZSGuard === "undefined") importScripts("core/guard.js");
+}
 
 const PORT = 17613;
 const URL = `ws://127.0.0.1:${PORT}`;
@@ -119,6 +124,12 @@ const HEARTBEAT_MS = 10000;
 // pending requests slowly time out.
 const STALE_SOCKET_MS = 25000;
 const REQUEST_TIMEOUT_DEFAULT = 130000; // a bit above the 120s tool timeout
+// Local probes answer in single-digit milliseconds; they get a shorter socket
+// wait so a real outage is reported without the tool cold-start delay.
+const FAST_PROBE_TYPES = new Set([
+  "ping", "studio_status", "list_mcp_servers", "get_servers",
+  "list_tools", "get_tools", "capabilities",
+]);
 
 let ws = null;
 let connected = false;
@@ -291,18 +302,28 @@ function startHeartbeat() {
   stopHeartbeat();
   heartbeatTimer = setInterval(() => {
     if (!connected) return;
-    // Half-open socket: the WS still reports OPEN but nothing comes through.
-    // Upstream 0110dec: an idle MV3 worker is suspended, so elapsed time alone
-    // makes a HEALTHY socket look stale. Ask for a pong and close only when the
-    // bridge actually fails to answer.
-    if (lastMessageAt && Date.now() - lastMessageAt > STALE_SOCKET_MS) {
+    // Shared rule from core/guard.js: elapsed time alone is not proof of a dead
+    // socket (an idle MV3 worker is suspended). Probe first, close only when no
+    // pong arrives. The rule is imported, not copied, so tests pin what runs.
+    const decision = ZSGuard.heartbeatDecision({ lastMessageAt, staleMs: STALE_SOCKET_MS });
+    if (decision.shouldProbe) {
       send({ type: "ping" }, 4000).then((pong) => {
-        if (pong && pong.type === "pong") return;
-        log("socket stale, forcing reconnect");
-        try { ws.close(); } catch {}
+        const answered = !!(pong && (pong.type === "pong" || pong.ok));
+        const final = ZSGuard.heartbeatDecision({
+          lastMessageAt, staleMs: STALE_SOCKET_MS, pongAnswered: answered,
+        });
+        if (final.close) {
+          log("socket stale, forcing reconnect");
+          try { ws.close(); } catch {}
+        }
       }).catch(() => {
-        log("socket stale, forcing reconnect");
-        try { ws.close(); } catch {}
+        const final = ZSGuard.heartbeatDecision({
+          lastMessageAt, staleMs: STALE_SOCKET_MS, pongAnswered: false,
+        });
+        if (final.close) {
+          log("socket stale, forcing reconnect");
+          try { ws.close(); } catch {}
+        }
       });
       return;
     }
@@ -341,11 +362,13 @@ async function send(obj, timeout = REQUEST_TIMEOUT_DEFAULT) {
   // arrives before the socket has re-opened. Wait for it instead of failing -
   // otherwise Kimi wrongly hears "bridge offline".
   if (!connected || !ws || ws.readyState !== WebSocket.OPEN) {
-    await waitForConnection(8000);
+    // Upstream 0110dec: cheap probes must not inherit the slow cold-start
+    // budget, or "offline" takes eight seconds to surface.
+    await waitForConnection(FAST_PROBE_TYPES.has(obj.type) ? 2500 : 8000);
   }
   return new Promise((resolve) => {
     if (!connected || !ws || ws.readyState !== WebSocket.OPEN) {
-      resolve({ ok: false, kind: "disconnected", error: "bridge not connected" });
+      resolve({ ok: false, kind: "disconnected", sent: false, error: "bridge not connected" });
       return;
     }
     const id = nextId++;
@@ -356,13 +379,17 @@ async function send(obj, timeout = REQUEST_TIMEOUT_DEFAULT) {
         resolve({ ok: false, kind: "timeout", error: "bridge did not respond in time" });
       }
     }, timeout);
-    pending.set(id, { resolve, timer });
+    pending.set(id, { resolve, timer, sent: false });
     try {
       ws.send(JSON.stringify(payload));
+      // Past this line the bridge may already have executed the request. A
+      // caller must know whether a dropped socket left an in-flight write.
+      const entry = pending.get(id);
+      if (entry) entry.sent = true;
     } catch (e) {
       clearTimeout(timer);
       pending.delete(id);
-      resolve({ ok: false, kind: "disconnected", error: String(e) });
+      resolve({ ok: false, kind: "disconnected", sent: false, error: String(e) });
     }
   });
 }
@@ -597,7 +624,7 @@ function resolvePending(id, value) {
 function failAllPending(reason) {
   for (const [, p] of pending) {
     clearTimeout(p.timer);
-    p.resolve({ ok: false, kind: "disconnected", error: reason });
+    p.resolve({ ok: false, kind: "disconnected", sent: !!p.sent, error: reason });
   }
   pending.clear();
 }
@@ -644,6 +671,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "bridge_status":
         await refreshBridgeStatus(true);
         break;
+      // Liveness probe for the content script: a healthy bridge answers in
+      // milliseconds. Without this case a ping fell through to "unknown
+      // message", which callers read as a bridge outage.
+      case "ping": {
+        const r = await send({ type: "ping" }, 6000);
+        sendResponse(r && r.type === "pong"
+          ? { ok: true }
+          : { ok: false, kind: (r && r.kind) || "no_pong", error: (r && r.error) || "bridge did not answer the ping" });
+        break;
+      }
       case "list_tools": {
         // Prefer a live refresh; fall back to cache so the loop never stalls.
         // 10s, not 25s: a catalogue request only blocks this long when one of the
