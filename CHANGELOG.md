@@ -129,8 +129,11 @@ All notable changes to snapgentV3 Free are documented here.
   the bar into the host's composer, outside `#zs-root`. Off-grid legacy values
   moved to the nearest step, so nothing on the bar shifted by more than 1px, and
   every control on the bar is now capped to one control height.
-- **Extension version is now 3.10.0** (the Snapgent App stays 0.1.1, the bridge
-  stays 3.9.4). Reload the unpacked extension so the popup shows `ext v3.10.0`.
+- **Extension and bridge versions are now 3.10.0** (the Snapgent App stays
+  0.1.1). The bridge version moves with it because its code changed (A2A facade,
+  handshake auth, hardened tools) and because the popup labels a running bridge
+  whose version differs from the extension's. Reload the unpacked extension so
+  the popup shows `ext v3.10.0`.
 - **The A2A bearer token is kept in a file** (`~/.snapgent/a2a_token`, mode `600`,
   reused across restarts) instead of only being printed, so a local agent reads it
   rather than copying the value out of the bridge window. `ZS_A2A_TOKEN` still pins
