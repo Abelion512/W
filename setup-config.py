@@ -55,10 +55,13 @@ def main(root_override: Optional[str] = None) -> int:
 
         configuration = _load_config()
         servers = configuration["mcpServers"]
-        assert isinstance(servers, dict)
+        if not isinstance(servers, dict):
+            raise RuntimeError(f"{CONFIG_PATH.name} must contain an object named mcpServers.")
 
+        # workspace_mcp.py is stdlib-only; sys.executable may be a short-lived
+        # Hermes venv, so store a PATH command that survives venv replacement.
         _set_server(
-            servers, "repo", sys.executable, [str(WORKSPACE_MCP)],
+            servers, "repo", "python3", [str(WORKSPACE_MCP)],
             {"ZS_WORKSPACE_ROOT": str(root)},
         )
         for stale in ("vscode", "roblox", "effectcraft"):
