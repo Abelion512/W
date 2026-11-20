@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Page preload for the AI site view. contextIsolation is OFF so the extension
-// scripts see the real page DOM, exactly like content scripts do.
-// Security: only allow-listed provider hosts get the bridge shim; ipcRenderer
-// stays inside this closure and is never attached to window.
+// Page preload for the AI site view. contextIsolation is ON: this script, the
+// chrome shim and the injected content scripts all live in an isolated world.
+// They share the page's DOM but not its JS globals, so page JavaScript cannot
+// reach ipcRenderer or call privileged tools. No shim is attached to window.
 const { ipcRenderer, webFrame } = require("electron");
 const fs = require("fs");
 const path = require("path");
@@ -77,8 +77,12 @@ if (provider && isTop && location.protocol === "https:") {
       return cb ? undefined : p;
     },
   };
-  const chromeShim = Object.freeze({ runtime: Object.freeze(runtime), storage: Object.freeze({ local: Object.freeze(local) }) });
-  Object.defineProperty(window, "chrome", { value: chromeShim, writable: false, configurable: false });
+  // Lexical binding in THIS isolated world only. Never assign it to window:
+  // with contextIsolation the page world would then be able to call call_tool.
+  const chrome = Object.freeze({
+    runtime: Object.freeze(runtime),
+    storage: Object.freeze({ local: Object.freeze(local) }),
+  });
 
   ipcRenderer.on("zs:push", (_e, msg) => {
     for (const fn of [...listeners]) { try { fn(msg, {}, () => {}); } catch {} }
@@ -92,13 +96,24 @@ if (provider && isTop && location.protocol === "https:") {
   }
 
   // ---- content scripts (document_idle), same order as manifest.json
-  async function inject() {
+  function inject() {
     const css = read("overlay.css");
     if (css) { try { webFrame.insertCSS(css); } catch {} }
+    const sources = [];
     for (const rel of ["core/config.js", "core/parser.js", `providers/${provider}.js`, "core/main.js"]) {
       const code = read(rel);
       if (!code) { console.error("[snapgent] missing", rel); return; }
-      try { await webFrame.executeJavaScript(code); } catch (e) { console.error("[snapgent] inject failed", rel, e); return; }
+      sources.push(code);
+    }
+    // Direct eval in this isolated-world scope. The four files are classic
+    // scripts that share top-level `const` bindings (ZS, ZSParse, ZSProvider),
+    // so they must run in ONE scope. They see `chrome` lexically; the page world
+    // sees neither the shim nor ipcRenderer. webFrame.executeJavaScript would
+    // run them in the page world and hand every tool to page JavaScript.
+    try {
+      eval(sources.join("\n;\n"));
+    } catch (e) {
+      console.error("[snapgent] inject failed", e);
     }
   }
   const run = () => setTimeout(inject, 300);

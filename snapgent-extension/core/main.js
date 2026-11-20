@@ -37,7 +37,8 @@
   // Persistent, lightweight breadcrumb log of the agentic loop's key decisions
   // (sends, response kinds, tool start/end, resumes, stops). Read back from the
   // console (filter "[zs-diag]"). Kept in this closure only: this code runs in
-  // the page world, so a DOM/global mirror would let the host site read prompts.
+  // the extension's isolated world, but a DOM/global mirror would still expose
+  // prompts to the host site.
   const ZS_DIAG_MAX = 300;
   const _diag = [];
   function diag(event, data) {

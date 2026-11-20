@@ -13,7 +13,9 @@ symlinks that resolve outside the root are rejected, not followed.
 stdlib only.
 """
 
+import os
 import shutil
+import time
 from itertools import islice
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -21,6 +23,7 @@ from typing import Any, Dict, Iterable, List, Optional
 DEFAULT_MAX_FILES = 50
 DEFAULT_MAX_FILE_BYTES = 64 * 1024
 DEFAULT_MAX_BYTES = 256 * 1024
+DEFAULT_TTL_SECONDS = 24 * 60 * 60
 
 
 class ContextSandboxError(ValueError):
@@ -67,6 +70,25 @@ def _render(entries: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _cleanup_expired(dest_root: Path, ttl_seconds: int) -> None:
+    """Drop task directories older than the TTL; the copies can hold secrets."""
+    if ttl_seconds <= 0:
+        return
+    cutoff = time.time() - ttl_seconds
+    try:
+        candidates = list(dest_root.iterdir())
+    except OSError:
+        return
+    for path in candidates:
+        if not path.is_dir():
+            continue
+        try:
+            if path.stat().st_mtime < cutoff:
+                shutil.rmtree(path)
+        except OSError:
+            pass
+
+
 def prepare(
     files: Iterable[Any],
     task_id: str,
@@ -75,6 +97,7 @@ def prepare(
     max_files: int = DEFAULT_MAX_FILES,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
     max_bytes: int = DEFAULT_MAX_BYTES,
+    ttl_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Copy the requested files and return a manifest plus the prompt block.
 
@@ -84,6 +107,12 @@ def prepare(
     """
     root = Path(root).resolve()
     dest_root = Path(dest_root) if dest_root is not None else root / ".snapgent" / "context"
+    if ttl_seconds is None:
+        try:
+            ttl_seconds = int(os.environ.get("ZS_CONTEXT_TTL_SECONDS", str(DEFAULT_TTL_SECONDS)))
+        except ValueError:
+            ttl_seconds = DEFAULT_TTL_SECONDS
+    _cleanup_expired(dest_root, ttl_seconds)
     dest = (dest_root / _safe_task_id(task_id)).resolve()
     dest.mkdir(parents=True, exist_ok=True)
     # Context files can contain secrets handed to a web model. Keep the task

@@ -82,6 +82,7 @@ jobs:
                       snapgent-app/extension/providers/*.js; do
             node --check "$file"
           done
+          node snapgent-app/test-main-world-isolation.js
 
   e2e:
     runs-on: ubuntu-latest

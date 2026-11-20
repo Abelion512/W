@@ -60,6 +60,21 @@ class ContextSandboxTests(unittest.TestCase):
                 )
 
 
+    def test_expired_context_directories_are_removed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "ok.txt").write_text("fine", encoding="utf-8")
+            dest_root = root / "ctx"
+            stale = dest_root / "old-task"
+            stale.mkdir(parents=True)
+            (stale / "secret.txt").write_text("old", encoding="utf-8")
+            old = __import__("time").time() - 3 * 24 * 60 * 60
+            __import__("os").utime(stale, (old, old))
+            context_sandbox.prepare(["ok.txt"], "new-task", root, dest_root)
+            self.assertFalse(stale.exists())
+            self.assertTrue((dest_root / "new-task").exists())
+
+
 class HarnessLoopTests(unittest.TestCase):
     def test_a2a_token_honours_env_overrides(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -37,6 +37,14 @@ let store = readJson(STORE_FILE, {});
 let history = readJson(HISTORY_FILE, []);
 let workspace = store.__workspace || "";
 
+// The standalone app ships only the vscode MCP server. The browser extension's
+// Roblox/EffectCraft targets have no server here, so hide them instead of
+// offering a target whose every command fails as "unknown tool".
+if (!store.zsMcpEnabled || typeof store.zsMcpEnabled !== "object" || Array.isArray(store.zsMcpEnabled)) store.zsMcpEnabled = {};
+store.zsMcpEnabled.roblox = false;
+store.zsMcpEnabled.effectcraft = false;
+writeJson(STORE_FILE, store);
+
 // ---------------------------------------------------------------- built-in bridge
 function binPath(name) {
   const packaged = path.join(process.resourcesPath || "", "bin", name);
@@ -188,9 +196,11 @@ function createWindow() {
   view = new BrowserView({
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
-      contextIsolation: false, // content scripts must share the page's DOM
+      // Content scripts run in this isolated world, not the page's world. They
+      // still see the DOM, but the chrome/IPC shim is unreachable from page JS.
+      contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: false, // preload reads the extension files from disk
       backgroundThrottling: false,
       partition: "persist:snapgent", // dedicated profile: logins stay inside the app
     },
