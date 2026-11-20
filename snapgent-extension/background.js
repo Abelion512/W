@@ -290,19 +290,25 @@ function scheduleReconnect() {
 function startHeartbeat() {
   stopHeartbeat();
   heartbeatTimer = setInterval(() => {
-    if (connected) {
-      // Half-open socket: the WS still reports OPEN but nothing comes through.
-      // The pong (and every other frame) refreshes lastMessageAt; if it has
-      // gone stale, drop the dead socket so onclose triggers a reconnect.
-      if (lastMessageAt && Date.now() - lastMessageAt > STALE_SOCKET_MS) {
+    if (!connected) return;
+    // Half-open socket: the WS still reports OPEN but nothing comes through.
+    // Upstream 0110dec: an idle MV3 worker is suspended, so elapsed time alone
+    // makes a HEALTHY socket look stale. Ask for a pong and close only when the
+    // bridge actually fails to answer.
+    if (lastMessageAt && Date.now() - lastMessageAt > STALE_SOCKET_MS) {
+      send({ type: "ping" }, 4000).then((pong) => {
+        if (pong && pong.type === "pong") return;
         log("socket stale, forcing reconnect");
         try { ws.close(); } catch {}
-        return;
-      }
-      // Keeps the MV3 service worker alive AND detects a half-open socket.
-      send({ type: "ping" }).catch(() => {});
-      refreshStudioStatus();
+      }).catch(() => {
+        log("socket stale, forcing reconnect");
+        try { ws.close(); } catch {}
+      });
+      return;
     }
+    // Keeps the MV3 service worker alive AND detects a half-open socket.
+    send({ type: "ping" }).catch(() => {});
+    refreshStudioStatus();
   }, HEARTBEAT_MS);
 }
 

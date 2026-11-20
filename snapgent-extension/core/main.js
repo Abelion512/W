@@ -519,7 +519,9 @@
       // fix for "I switched to Studio, came back and the command says 'not run'":
       // the loop used to burn its 5-minute inactivity budget off-screen, end with
       // "No response from <site>", and orphan the pending command.
-      if (document.hidden && !A.stop) {
+      // Upstream a4b831b: with Background sessions on, parkHidden() returns at
+      // once and the loop re-parks forever without ever reading the reply.
+      if (document.hidden && !A.stop && !(await backgroundSessionsReady())) {
         const parked = await parkHidden();
         if (A.stop) return { kind: "stopped" };
         if (parked) {
