@@ -68,7 +68,7 @@ LOG_PATH = ROOT / "logs" / "bridge_debug.log"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("ZS_BRIDGE_PORT", "17613"))
 MCP_PROTOCOL_VERSION = "2024-11-05"
-BRIDGE_VERSION = "3.9.4"
+BRIDGE_VERSION = "3.10.0"
 MAX_LOG_CHARS = 1000
 # Auto-recovery backoff for dead MCP subprocesses: 5s, 10s, 20s, ... capped.
 RESTART_BASE_DELAY_SECONDS = 5.0
