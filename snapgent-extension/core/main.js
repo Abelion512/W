@@ -90,7 +90,7 @@
     { name: "Kimi", url: "https://www.kimi.ai/" },
     { name: "GLM", url: "https://chat.z.ai/" },
     { name: "Qwen", url: "https://chat.qwen.ai/" },
-    { name: "Arena", url: "https://arena.ai/text/direct" },
+    { name: "Arena", url: "https://arena.ai/chat" },
     { name: "Meta AI", url: "https://www.meta.ai/" },
     { name: "Ptero", url: "https://ptero.pro/" },
     { name: "Grok", url: "https://grok.com/" },

@@ -48,7 +48,7 @@ PROVIDERS = {
     "kimi": ("kimi.ai", "https://www.kimi.ai/"),
     "mistral": ("chat.mistral.ai", "https://chat.mistral.ai/"),
     "meta": ("meta.ai", "https://meta.ai/"),
-    "arena": ("arena.ai", "https://arena.ai/"),
+    "arena": ("arena.ai", "https://arena.ai/chat"),
     "rudder": ("rudder.chat", "https://rudder.chat/"),
 }
 
