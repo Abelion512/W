@@ -6,6 +6,9 @@ discovers it, sends a prompt, polls the task, or streams the result over HTTP
 and JSON-RPC 2.0. The extension keeps doing all DOM work; `a2a_server.py` only
 adds a thin, loopback-only HTTP layer in the same process as `bridge.py`.
 
+Per-provider modes, limits and observed behavior live in
+[`WEB_AI_CAPABILITIES.md`](WEB_AI_CAPABILITIES.md).
+
 ## Data flow
 
 ```
@@ -261,6 +264,79 @@ ZS_A2A_PORT=19000 ZS_A2A_TOKEN=my-token bash Linux_Start.sh
   bridge sends a prompt to a single socket and accepts its reply only from that
   socket, but a local process that connects can still interfere. See the Risks
   section of `docs/a2a-design.md`.
+
+## Supported local clients
+
+The A2A endpoint is meant for local coding harnesses: **Hermes** (primary),
+OpenCode, Freebuff, Claude Code and Antigravity. An A2A 1.0 client needs only the
+Agent Card, the bearer token and `SendMessage`; no adapter or protocol shim is
+needed. Hermes' `a2a` toolset was verified end to end: it fetches the v1.0 card,
+selects the JSONRPC interface from `supportedInterfaces`, sends
+`A2A-Version: 1.0`, and accepts the bare `Task` this server returns.
+
+### Hermes
+
+Register the bridge as a peer under `a2a_agents` in Hermes `config.yaml`:
+
+```yaml
+a2a_agents:
+  webmcp:
+    url: http://127.0.0.1:17614
+    auth:
+      type: bearer
+      token: "<contents of ~/.snapgent/a2a_token>"
+    timeout: 600
+```
+
+`timeout` is in seconds and defaults to 120 in Hermes. Set it at or above
+`ZS_A2A_TIMEOUT_MS` (default 600000 ms); otherwise Hermes gives up on a slow
+provider while the task keeps running here. Then call `a2a_call` with
+`agent: webmcp`.
+
+### Other harnesses
+
+Point the client at `http://127.0.0.1:17614`, read the bearer token from
+`~/.snapgent/a2a_token`, and send `SendMessage` with `metadata.provider` set to
+the web AI to use. Use a timeout of at least 600 seconds. The v0.3 method
+aliases are accepted as well.
+
+Routing may also be steered with capability metadata. All four flags are
+optional; omitting them keeps the default routing:
+
+```
+curl -s -X POST http://127.0.0.1:17614/ \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $ZS_A2A_TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "SendMessage",
+    "params": {
+      "metadata": {
+        "needsVision": true,
+        "needsWeb": true,
+        "largeInput": true,
+        "avoidProviders": ["claude"]
+      },
+      "message": {
+        "messageId": "msg-4",
+        "role": "ROLE_USER",
+        "parts": [{"text": "Describe this screenshot and verify it against the live site."}]
+      }
+    }
+  }'
+```
+
+See `docs/model-routing.md` for the flags, their filter order, and the
+`capabilityFallback` behaviour when no provider qualifies.
+
+### Verified web AI modes
+
+The focused targets are Gemini 4 Hydrogen with thinking level High, DeepSeek
+with DeepThink and web Search on, and ChatGPT with Think on. Set the DeepSeek
+and ChatGPT modes in the site UI before starting the bridge. Gemini's adapter
+restores 4 Hydrogen + High at session startup; DeepSeek's adapter leaves Search
+as the user set it.
 
 ## Testing
 

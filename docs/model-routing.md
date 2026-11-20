@@ -88,6 +88,48 @@ the job, while complexity only says how hard the job is. `realtime` + `high`
 still has to land on Grok - a generic `deep` tier would send it to Claude, which
 cannot see the live page.
 
+### Capability filters
+
+A caller may declare what a task needs. The four flags are optional and are
+applied **after** the precedence above, to the provider chain that precedence
+already chose:
+
+```json
+{
+  "method": "SendMessage",
+  "params": {
+    "metadata": {
+      "taskCategory": "review",
+      "needsVision": true,
+      "needsWeb": true,
+      "largeInput": true,
+      "avoidProviders": ["claude"]
+    },
+    "message": { "parts": [{ "text": "..." }] }
+  }
+}
+```
+
+`PROVIDER_CAPABILITIES` in `background.js` holds the static booleans used by the
+filters:
+
+- `vision`: `gemini`, `glm`, `kimi`, `meta`, `arena`.
+- `webSearch`: `chatgpt`, `deepseek`, `grok`, `mistral` (composer Search toggle).
+- `largeInput`: `arena` (120k), `deepseek` (163,840), `qwen` (131,072).
+
+All three filters run in that order — `needsVision`, then `needsWeb`, then
+`largeInput` — then `avoidProviders` drops the named ids. Each filter removes
+providers that lack the flag, keeping the remaining order. `tabForRoute` is
+unchanged: it picks the first open tab in the filtered chain. If the filters
+remove every provider, the route keeps the original chain and sets
+`capabilityFallback: true`, so the existing fallbacks below still apply. With no
+flags there is no filtering and routing is exactly the old behaviour.
+
+Caveat: capability flags are static. DeepSeek and Qwen decide vision per model
+through a getter in the content script, so `background.js` treats both as
+`vision: false`. A `needsVision` flag therefore excludes them even when the
+model selected in that tab can see images.
+
 ## Where the decision is made
 
 The harness (Hermes, Claude Code, or another A2A client) knows the task category.
