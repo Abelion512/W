@@ -265,7 +265,7 @@ const ZSProvider = (() => {
   // A genuinely fresh chat: the /text/* route with the composer rendered and no
   // turns. An existing conversation is /c/<id>, so it never gates.
   const isFreshChat = () =>
-    chatIsEmpty() && /^\/(text\/|chat)/.test(location.pathname) && !!getEditor();
+    chatIsEmpty() && /^\/(text\/|chat(?:\/|$))/.test(location.pathname) && !!getEditor();
 
   // The whole composer the Start gate hides as one unit = the <form>.
   const composerFrame = () => {
