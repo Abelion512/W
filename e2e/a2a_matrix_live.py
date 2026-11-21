@@ -211,18 +211,31 @@ def main():
                 break
     except KeyboardInterrupt:
         print("\ninterrupted")
-    passed_last = {r["provider"]: r["ok"] for r in results[-2 * len(providers):]}
+    # Trailing consecutive passes per provider. A single pass is not stability:
+    # the contract is two rounds in a row, including when some sites blocked.
+    streaks: dict[str, int] = {}
+    counted: set[str] = set()
+    for result in reversed(results):
+        provider = result["provider"]
+        if provider in blocked or provider in counted:
+            continue
+        streaks[provider] = streaks.get(provider, 0) + 1 if result["ok"] else 0
+        if not result["ok"]:
+            counted.add(provider)
+    active = [p for p in providers if p not in blocked]
     print("\n--- summary ---")
     for provider in providers:
         if provider in blocked:
             # Not a failure of the harness, and not something a retry can fix.
             print(f"BLOCKED  {provider:8s} {blocked[provider][:90]}")
             continue
-        state = "PASS" if passed_last.get(provider) else "FAIL"
+        state = "PASS" if streaks.get(provider, 0) >= 2 else "FAIL"
         rows = [r for r in results if r["provider"] == provider]
         detail = "; ".join(f"{r['round']}:{'ok' if r['ok'] else (r.get('error') or 'fail')[:40]}" for r in rows)
         print(f"{state}  {provider:8s} {detail}")
-    stable = bool(results) and all(passed_last.get(p) for p in providers if p not in blocked)
+    stable = bool(active) and all(streaks.get(provider, 0) >= 2 for provider in active)
+    if not active:
+        print("no provider was testable; stability cannot be claimed")
     print("STABLE" if stable else "NOT STABLE")
     return 0 if stable else 1
 

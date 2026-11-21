@@ -142,7 +142,7 @@ class A2AServer:
 
     def __init__(
         self,
-        submit: Callable[[str, float], Dict[str, Any]],
+        submit: Callable[[str, float, Dict[str, Any]], Dict[str, Any]],
         host: str = "127.0.0.1",
         port: int = DEFAULT_PORT,
         token: str = "",
@@ -508,7 +508,7 @@ if __name__ == "__main__":  # pragma: no cover - manual smoke entry point
     _token = os.environ.get("ZS_A2A_TOKEN") or secrets.token_urlsafe(32)
     _base = f"http://127.0.0.1:{_port}"
 
-    def _echo(prompt: str, timeout: float) -> Dict[str, Any]:
+    def _echo(prompt: str, timeout: float, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return {"ok": True, "text": f"echo: {prompt}"}
 
     server = A2AServer(_echo, port=_port, token=_token, base_url=_base)

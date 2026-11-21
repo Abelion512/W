@@ -343,7 +343,7 @@ as the user set it.
 Offline (no browser, no network):
 
 ```
-python3 -m unittest
+python3 -m unittest discover -s tests
 node snapgent-extension/test-a2a.js
 ```
 

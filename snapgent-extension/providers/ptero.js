@@ -180,9 +180,10 @@ const ZSProvider = (() => {
       throw new Error("Ptero send button did not become available");
     }
     button.click();
-    await waitFor(() =>
+    const sent = await waitFor(() =>
       editorText().trim() === "" || userCount() > beforeUsers || isHardGenerating(),
     5000);
+    if (!sent) throw new Error("Ptero did not confirm the message was sent");
   }
   function stopGeneration() {
     const button = stopButton();

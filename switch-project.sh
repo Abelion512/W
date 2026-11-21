@@ -66,8 +66,24 @@ fi
 # Ask the running bridge to restart its MCP servers (re-reads config.json).
 port="${ZS_BRIDGE_PORT:-17613}"
 "$PY" - "$port" <<'PY'
-import asyncio, json, sys
+import asyncio, json, os, sys, urllib.parse
+from pathlib import Path
+
 port = int(sys.argv[1])
+
+# The bridge requires a token from native clients (no Origin header). Resolve
+# it the same way bridge_auth does, or the restart silently fails with 1008.
+token = (os.environ.get("ZS_BRIDGE_TOKEN") or "").strip()
+if not token:
+    override = (os.environ.get("ZS_BRIDGE_TOKEN_FILE") or "").strip()
+    token_path = Path(override).expanduser() if override else Path.home() / ".snapgent" / "bridge_token"
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        token = ""
+uri = f"ws://127.0.0.1:{port}"
+if token:
+    uri += "?token=" + urllib.parse.quote(token)
 
 async def main():
     try:
@@ -76,7 +92,7 @@ async def main():
         print("  (websockets not available; click 'Restart' in the extension popup)")
         return
     try:
-        async with websockets.connect(f"ws://127.0.0.1:{port}", open_timeout=3) as ws:
+        async with websockets.connect(uri, open_timeout=3) as ws:
             await ws.send(json.dumps({"type": "restart_mcp", "id": "switch"}))
             loop = asyncio.get_running_loop()
             deadline = loop.time() + 30
