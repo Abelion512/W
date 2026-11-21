@@ -87,7 +87,7 @@ REJECT_LOG_INTERVAL = 60.0
 ROTATE_CLOSE_CODE = 1012
 ROTATE_CLOSE_REASON = "bridge token rotated; reconnect with the new token"
 
-# Upstream large-payload handling for concurrent requests.
+# Large payloads serialize off the event loop so one slow frame cannot block pings.
 MAX_CONCURRENT_REQUESTS = 32
 BIG_PAYLOAD_THREAD_BYTES = 256 * 1024
 

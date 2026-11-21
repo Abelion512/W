@@ -57,8 +57,8 @@ global.WebSocket = DeadSocket;
 // the heartbeat in the test runs the same rule the service worker runs.
 const guardSrc = fs.readFileSync(__dirname + "/core/guard.js", "utf8");
 const ZSGuard = (0, eval)(guardSrc + "\n; ZSGuard;"); // NOSONAR test only: own local guard.js read from disk, no external input
-// The Linux fork also imports core/pairing.js for the handshake URL and close
-// classification; inject it the same way so no importScripts is needed in Node.
+// background.js loads core/pairing.js for the handshake URL and close
+// classification; inject it here so no importScripts is needed in Node.
 const pairingSrc = fs.readFileSync(__dirname + "/core/pairing.js", "utf8");
 const ZSPairing = (0, eval)(pairingSrc + "\n; ZSPairing;"); // NOSONAR test only: own local pairing.js read from disk, no external input
 const src = fs.readFileSync(__dirname + "/background.js", "utf8");
