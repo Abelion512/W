@@ -70,7 +70,7 @@ PORT = int(os.environ.get("ZS_BRIDGE_PORT", "17613"))
 MCP_PROTOCOL_VERSION = "2024-11-05"
 # One pattern for the WebSocket handshake: all three browser extension schemes,
 # each with a non-empty extension id. Reused by run() and asserted by tests.
-EXTENSION_ORIGIN_PATTERN = re.compile(r"(?:chrome|moz|safari-web)-extension://.+")
+EXTENSION_ORIGIN_PATTERN = re.compile(r"^(?:chrome|moz|safari-web)-extension://.+$")
 BRIDGE_VERSION = "3.10.0"
 MAX_LOG_CHARS = 1000
 # Auto-recovery backoff for dead MCP subprocesses: 5s, 10s, 20s, ... capped.

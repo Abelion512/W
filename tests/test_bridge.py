@@ -356,6 +356,11 @@ class BridgeAuthTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertIsNotNone(pattern.match(origin), origin)
         self.assertIsNone(pattern.match("chrome-extension://"))
+        # websockets matches allowed_origins with re.search, so the whole Origin
+        # must match or a hostile page can smuggle an extension Origin inside it.
+        self.assertIsNone(
+            pattern.search("https://evil.example/?x=chrome-extension://abcdefghijklmnop")
+        )
 
     def test_rotate_token_refuses_when_pinned_or_disabled(self):
         with patch.dict(os.environ, {bridge.TOKEN_ENV: "pinned", bridge.AUTH_DISABLE_ENV: ""}):
