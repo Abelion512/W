@@ -55,19 +55,6 @@ def get_root() -> Path:
     return candidate
 
 
-def catalog_available() -> bool:
-    """Whether a workspace root resolves, so tools can be advertised.
-
-    The root can come from ZS_WORKSPACE_ROOT / MCP_ROOT (the "repo" target) or
-    from the active VS Code window, so this must not look at VS Code alone.
-    """
-    try:
-        get_root()
-    except (RuntimeError, OSError):
-        return False
-    return True
-
-
 def normalize_target(rel_or_abs: str, root: Path) -> Path:
     path = Path(rel_or_abs or ".")
     if not path.is_absolute():
@@ -188,7 +175,15 @@ def _bwrap_usable() -> bool:
             [
                 bwrap,
                 "--die-with-parent",
-                "--unshare-all",
+                # Probe the namespaces actually used by _sandboxed_argv. Using
+                # --unshare-all here would also require --unshare-net, so hosts
+                # without netns support would fail the probe even though the
+                # real command can run with network isolation left out.
+                "--unshare-user",
+                "--unshare-ipc",
+                "--unshare-pid",
+                "--unshare-uts",
+                "--unshare-cgroup",
                 "--cap-drop", "ALL",
                 "--new-session",
                 "--ro-bind", "/", "/",
@@ -412,8 +407,11 @@ def _run_process(command: List[str], root: Path, timeout: int = 30) -> str:
     stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
     output = stdout or stderr or "(no output)"
     if returncode:
+        # On failure stderr carries the actual cause even when stdout has
+        # partial output; keep both so the error is diagnosable.
+        detail = "\n".join(part for part in (stdout, stderr) if part) or "(no output)"
         raise RuntimeError(
-            f"Command exited with status {returncode}:\n{output[:MAX_FILE_CHARS]}"
+            f"Command exited with status {returncode}:\n{detail[:MAX_FILE_CHARS]}"
         )
     return output[:MAX_FILE_CHARS]
 
@@ -562,16 +560,35 @@ def read_files(paths: List[str]) -> List[Dict[str, str]]:
     return [{"path": path, "content": read_file(path)} for path in paths]
 
 
+def _iter_file_lines(path: str):
+    """Yield (line number, text) straight from disk, without read_file's cap."""
+    target = normalize_target(path, get_root())
+    if not target.is_file():
+        raise FileNotFoundError(f"File not found: {path}")
+    with target.open(encoding="utf-8", errors="replace") as stream:
+        for number, line in enumerate(stream, start=1):
+            yield number, line.rstrip("\r\n")
+
+
 def read_file_lines(path: str, start_line: int = 1, end_line: int = 200) -> str:
     if start_line < 1 or end_line < start_line:
         raise ValueError("Line numbers must be positive, and end_line must be >= start_line.")
     if end_line - start_line > 999:
         raise ValueError("Read at most 1000 lines per request.")
-    lines = read_file(path).splitlines()
-    return "\n".join(
-        f"{number}: {lines[number - 1]}"
-        for number in range(start_line, min(end_line, len(lines)) + 1)
-    )
+    selected = []
+    used = 0
+    for number, text in _iter_file_lines(path):
+        if number < start_line:
+            continue
+        if number > end_line:
+            break
+        if used + len(text) > MAX_FILE_CHARS:
+            selected.append(f"{number}: {text[:max(0, MAX_FILE_CHARS - used)]}")
+            selected.append("[truncated]")
+            break
+        selected.append(f"{number}: {text}")
+        used += len(text) + len(str(number)) + 2
+    return "\n".join(selected)
 
 
 def get_file_info(path: str) -> Dict[str, Any]:
@@ -590,7 +607,6 @@ def get_file_info(path: str) -> Dict[str, Any]:
 
 
 def get_file_outline(path: str) -> List[Dict[str, Any]]:
-    content = read_file(path)
     patterns = (
         r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)",
         r"^\s*class\s+([A-Za-z_]\w*)",
@@ -598,7 +614,7 @@ def get_file_outline(path: str) -> List[Dict[str, Any]]:
         r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)",
     )
     result = []
-    for line_number, line in enumerate(content.splitlines(), start=1):
+    for line_number, line in _iter_file_lines(path):
         for pattern in patterns:
             match = re.search(pattern, line)
             if match:
@@ -777,10 +793,13 @@ def _host_process(command: List[str], timeout: int = 120) -> str:
         timeout=timeout,
         check=False,
     )
-    output = result.stdout.strip() or result.stderr.strip() or "(no output)"
+    stdout = result.stdout.strip()
+    stderr = result.stderr.strip()
+    output = stdout or stderr or "(no output)"
     if result.returncode:
+        detail = "\n".join(part for part in (stdout, stderr) if part) or "(no output)"
         raise RuntimeError(
-            f"Command exited with status {result.returncode}:\n{output[:MAX_FILE_CHARS]}"
+            f"Command exited with status {result.returncode}:\n{detail[:MAX_FILE_CHARS]}"
         )
     return output[:MAX_FILE_CHARS]
 
@@ -931,10 +950,6 @@ def run_tests() -> str:
     if any(root.glob("*.sln")) or any(root.glob("*.csproj")):
         return _run_process(["dotnet", "test"], root, timeout=300)
     raise FileNotFoundError("No supported test setup found (package.json, pytest, or .NET project).")
-
-
-def _property(name: str, schema: Dict[str, Any]) -> Dict[str, Any]:
-    return {"name": name, **schema}
 
 
 def _tool(name: str, description: str, properties: Dict[str, Any], required: Optional[List[str]] = None) -> Dict[str, Any]:

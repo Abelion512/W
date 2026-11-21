@@ -44,9 +44,16 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test deps
-        run: python -m pip install pytest websockets pyflakes
+        run: python -m pip install -r requirements-dev.txt
+      # The sandbox tests fail closed when bwrap is absent, so the tests job
+      # needs the same real bubblewrap the e2e job installs.
+      - name: Install sandbox deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          bwrap --version
       - name: Python static check (unused imports/names)
-        run: python -m pyflakes workspace_mcp.py bridge.py bridge_auth.py setup-config.py tests/*.py e2e/*.py
+        run: python -m pyflakes *.py tests/*.py e2e/*.py scripts/*.py snapgent-app/mcp/*.py
       - name: Python tests
         run: python -m pytest -q
       - uses: actions/setup-node@v7
@@ -68,6 +75,14 @@ jobs:
           node snapgent-extension/test-rudder.js
           node snapgent-extension/test-grok-editor.js
           node snapgent-extension/test-a2a.js
+      - name: Desktop app syntax check
+        run: |
+          for file in snapgent-app/src/*.js \
+                      snapgent-app/extension/core/*.js \
+                      snapgent-app/extension/providers/*.js; do
+            node --check "$file"
+          done
+          node snapgent-app/test-main-world-isolation.js
 
   e2e:
     runs-on: ubuntu-latest
@@ -110,9 +125,4 @@ jobs:
           fi
           sudo apt-get install -y --reinstall --download-only bubblewrap || true
       - name: Live e2e (real bridge + subprocess, ephemeral port)
-        run: |
-          if [ -f e2e/e2e_live.py ]; then
-            python e2e/e2e_live.py
-          else
-            echo "e2e/e2e_live.py not present, skipping"
-          fi
+        run: python e2e/e2e_live.py

@@ -96,7 +96,7 @@ const importScripts = (relpath) => {
 
 const src = fs.readFileSync(__dirname + "/background.js", "utf8");
 const api = new Function("chrome", "WebSocket", "importScripts",
-  src + "; return { handleBridgeMessage, handleSubmitPrompt, routeFor, tabForRoute, TIER_PROVIDERS, CATEGORY_PROVIDERS, PROVIDER_HOSTS };"
+  src + "; return { handleBridgeMessage, handleSubmitPrompt, routeFor, tabForRoute, TIER_PROVIDERS, CATEGORY_PROVIDERS, PROVIDER_HOSTS, PROVIDER_CAPABILITIES };"
 )(chrome, StubWebSocket, importScripts);
 
 const results = [];
@@ -184,8 +184,8 @@ const until = async (cond, ms = 1000) => {
   ok("explicit 'deep' tier routes to the deep provider (ChatGPT)", deep && deep.tabId === 7);
   ok("relayed prompt labels the deep tier", deep && deep.msg.route === "deep");
 
-  // Declared complexity wins over the category default: a small code edit is a
-  // light task even though "code-edit" defaults to the balanced tier.
+  // Complexity wins when a category has no pinned provider list: a small code
+  // edit is a light task even though "code-edit" defaults to balanced.
   tabsForQuery = [
     { id: 21, active: true, url: "https://claude.ai/new" },
     { id: 22, active: false, url: "https://gemini.google.com/app" },
@@ -196,15 +196,17 @@ const until = async (cond, ms = 1000) => {
   ok("complexity 'low' downgrades a code-edit to the light tier (Gemini)", small && small.tabId === 22);
   ok("relayed prompt labels the downgraded tier", small && small.msg.route === "light");
 
-  // Category overrides pick a specialist list ahead of tier preference.
+  // A category's specialist list outranks even a high-complexity deep tier:
+  // "realtime" + "high" must still land on Grok, which can see the live page.
   tabsForQuery = [
     { id: 31, active: true, url: "https://gemini.google.com/app" },
     { id: 32, active: false, url: "https://grok.com/chat" },
   ];
   tabSends.length = 0;
-  await api.handleSubmitPrompt({ id: "p9", prompt: "today's news", metadata: { taskCategory: "realtime" } });
+  await api.handleSubmitPrompt({ id: "p9", prompt: "today's news", metadata: { taskCategory: "realtime", complexity: "high" } });
   const live = tabSends.find((s) => s.msg.type === "zs-a2a-prompt");
-  ok("category 'realtime' routes to Grok over the tier order", live && live.tabId === 32);
+  ok("category 'realtime' + 'high' still routes to Grok", live && live.tabId === 32);
+  ok("category provider list keeps its declared tier label", live && live.msg.route === "balanced");
 
   // Preferred providers are all closed -> fall back to the active tab, not the first.
   tabsForQuery = [{ id: 11, active: true, url: "https://chat.mistral.ai/chat" }];
@@ -271,6 +273,86 @@ const until = async (cond, ms = 1000) => {
   // No text tier may list a provider twice (order is the contract).
   const duplicated = Object.entries(routing).filter(([, list]) => new Set(list).size !== list.length).map(([t]) => t);
   ok("no tier repeats a provider", duplicated.length === 0, duplicated.join(","));
+
+  // ── capability-aware routing contract ───────────────────────────────────────
+  // These checks target the agreed contract, not the current background.js code.
+  const caps = api.PROVIDER_CAPABILITIES;
+  const has = (id, cap) => !!(caps && caps[id] && caps[id][cap]);
+  ok("capabilities: vision set", ["gemini", "glm", "kimi", "meta", "arena"].every((p) => has(p, "vision")));
+  ok("capabilities: no vision on deepseek/qwen", !has("deepseek", "vision") && !has("qwen", "vision"));
+  ok("capabilities: webSearch set", ["chatgpt", "deepseek", "grok", "mistral"].every((p) => has(p, "webSearch")));
+  ok("capabilities: largeInput set", ["arena", "deepseek", "qwen"].every((p) => has(p, "largeInput")));
+
+  // No capability flags: route is byte-for-byte the old shape, no fallback field.
+  const plainRoute = api.routeFor({ complexity: "high" });
+  ok("no flags: deep chain unchanged", plainRoute && plainRoute.tier === "deep" &&
+     JSON.stringify(plainRoute.providers) === JSON.stringify(["claude", "chatgpt", "kimi"]));
+  ok("no flags: no capabilityFallback field", plainRoute && !("capabilityFallback" in plainRoute));
+  ok("no flags: only tier/providers keys", plainRoute &&
+     Object.keys(plainRoute).sort((a, b) => String(a).localeCompare(String(b))).join(",") === "providers,tier");
+
+  // A pin without flags is still an ordinary pinned route.
+  const pinRoute = api.routeFor({ provider: "grok" });
+  ok("pin without flags: tier is pinned", pinRoute && pinRoute.tier === "pinned" &&
+     JSON.stringify(pinRoute.providers) === JSON.stringify(["grok"]));
+  ok("pin without flags: no fallback field", pinRoute && !("capabilityFallback" in pinRoute));
+
+  // Filters keep the tier label and base order, dropping providers without the flag.
+  const visionRoute = api.routeFor({ modelTier: "balanced", needsVision: true });
+  ok("needsVision filters balanced to gemini,glm,kimi", visionRoute &&
+     JSON.stringify(visionRoute.providers) === JSON.stringify(["gemini", "glm", "kimi"]) &&
+     visionRoute.tier === "balanced" && !visionRoute.capabilityFallback);
+
+  const webRoute = api.routeFor({ modelTier: "balanced", needsWeb: true });
+  ok("needsWeb filters balanced to deepseek,grok", webRoute &&
+     JSON.stringify(webRoute.providers) === JSON.stringify(["deepseek", "grok"]));
+
+  const largeRoute = api.routeFor({ modelTier: "balanced", largeInput: true });
+  ok("largeInput filters balanced to deepseek,qwen", largeRoute &&
+     JSON.stringify(largeRoute.providers) === JSON.stringify(["deepseek", "qwen"]));
+
+  // avoidProviders removes ids after capability filtering; order survives.
+  const avoidRoute = api.routeFor({ modelTier: "balanced", needsVision: true, avoidProviders: ["glm"] });
+  ok("avoidProviders drops ids after capability filter", avoidRoute &&
+     JSON.stringify(avoidRoute.providers) === JSON.stringify(["gemini", "kimi"]));
+
+  // Empty after filtering -> original base list plus capabilityFallback.
+  const pinAvoid = api.routeFor({ provider: "deepseek", avoidProviders: ["deepseek"] });
+  ok("pinned avoid-all falls back to base", pinAvoid && pinAvoid.capabilityFallback === true &&
+     JSON.stringify(pinAvoid.providers) === JSON.stringify(["deepseek"]) && pinAvoid.tier === "pinned");
+
+  // Kimi is vision-capable per the capability map, so deep+vision keeps Kimi.
+  const deepVision = api.routeFor({ modelTier: "deep", needsVision: true });
+  ok("deep needsVision keeps only kimi", deepVision &&
+     JSON.stringify(deepVision.providers) === JSON.stringify(["kimi"]) &&
+     !deepVision.capabilityFallback);
+
+  // No deep-chain provider supports largeInput, so this filter is the real fallback.
+  const deepLarge = api.routeFor({ modelTier: "deep", largeInput: true });
+  ok("deep largeInput falls back to base chain", deepLarge &&
+     deepLarge.capabilityFallback === true &&
+     JSON.stringify(deepLarge.providers) === JSON.stringify(["claude", "chatgpt", "kimi"]));
+
+  const noOverlap = api.routeFor({ modelTier: "balanced", needsVision: true, needsWeb: true });
+  ok("multiple filters are AND; empty falls back to base", noOverlap &&
+     noOverlap.capabilityFallback === true &&
+     JSON.stringify(noOverlap.providers) ===
+       JSON.stringify(["deepseek", "gemini", "grok", "qwen", "glm", "kimi"]));
+
+  // tabForRoute still chooses the first open tab among filtered providers only:
+  // active ChatGPT is open but not in the vision-filtered list.
+  const visionTabs = [
+    { id: 70, active: true, url: "https://chatgpt.com/c/1" },
+    { id: 71, active: false, url: "https://gemini.google.com/app" },
+    { id: 72, active: false, url: "https://chat.z.ai/" },
+  ];
+  const visionHit = api.tabForRoute(visionTabs, visionRoute);
+  ok("tabForRoute ignores open tabs outside filtered providers", visionHit && visionHit.id === 71);
+  tabsForQuery = visionTabs;
+  tabSends.length = 0;
+  await api.handleSubmitPrompt({ id: "p12", prompt: "vision", metadata: { modelTier: "balanced", needsVision: true } });
+  const visionRelay = tabSends.find((s) => s.msg.type === "zs-a2a-prompt");
+  ok("relay honours capability-filtered route", visionRelay && visionRelay.tabId === 71);
 
   // ── prompt_ack is swallowed (fire-and-forget relay) ───────────────────────
   const before = frames.length;

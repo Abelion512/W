@@ -53,7 +53,7 @@ class McpServer {
 
   async stop() {
     const proc = this.proc;
-    this.proc = null; this.ready = false; this.tools = [];
+    this.proc = null; this.ready = false; this.tools = []; this.buf = "";
     this._fail(`${this.id} MCP server stopped.`);
     if (!proc || proc.exitCode !== null) return;
     try { proc.stdin.end(); } catch {}
@@ -131,8 +131,15 @@ class BridgeCore {
     this.servers.clear(); this.catalog = [];
   }
   async restart(config) {
-    try { await this.stop(); await this.start(config); this.onChange(); return { ok: true, alive: this.mcpAlive() }; }
-    catch (e) { return { ok: false, alive: false, error: String(e.message || e) }; }
+    // Queue restarts: a page-triggered and a toolbar-triggered restart must
+    // never interleave stop()/start() and orphan a child process.
+    const previous = this._restartPromise || Promise.resolve();
+    const run = previous.catch(() => {}).then(async () => {
+      try { await this.stop(); await this.start(config); this.onChange(); return { ok: true, alive: this.mcpAlive() }; }
+      catch (e) { return { ok: false, alive: false, error: String(e.message || e) }; }
+    });
+    this._restartPromise = run;
+    return run;
   }
 
   _resolve(name) {

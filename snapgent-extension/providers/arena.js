@@ -224,13 +224,12 @@ const ZSProvider = (() => {
   const assistantCount = () => assistantItems().length;
   const userCount = () => allItems().filter(isUserItem).length;
 
-  // The composer textarea = the ONLY <textarea> inside a <form> (other page
-  // textareas are recaptcha/aria-hidden). Scope away snapgentV3's own settings
-  // textarea (#zs-root) so the send hooks' "not on a chat page" guard holds on
-  // login/OAuth pages that have no site composer.
+  // Arena's composer changed from a form <textarea> to a tiptap/ProseMirror
+  // contenteditable. Accept both shapes, scoped away from #zs-root so the
+  // send hooks' "not on a chat page" guard still holds on OAuth pages.
   const getEditor = () => {
-    for (const e of document.querySelectorAll("form textarea")) {
-      if (!e.closest("#zs-root")) return e;
+    for (const e of document.querySelectorAll('form textarea, form [contenteditable="true"]')) {
+      if (!e.closest("#zs-root") && e.getClientRects().length) return e;
     }
     return null;
   };
@@ -266,7 +265,7 @@ const ZSProvider = (() => {
   // A genuinely fresh chat: the /text/* route with the composer rendered and no
   // turns. An existing conversation is /c/<id>, so it never gates.
   const isFreshChat = () =>
-    chatIsEmpty() && /^\/text\//.test(location.pathname) && !!getEditor();
+    chatIsEmpty() && /^\/(text\/|chat(?:\/|$))/.test(location.pathname) && !!getEditor();
 
   // The whole composer the Start gate hides as one unit = the <form>.
   const composerFrame = () => {
@@ -418,6 +417,14 @@ const ZSProvider = (() => {
   // React's onChange fires, dispatch an input event, wait for the submit button
   // to re-enable, then click it (Enter would insert a newline).
   function setTextareaValue(el, v) {
+    if (el.isContentEditable) {
+      el.focus();
+      el.textContent = v;
+      el.dispatchEvent(new InputEvent("input", {
+        bubbles: true, inputType: "insertText", data: v,
+      }));
+      return;
+    }
     const proto = window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype;
     const setter = proto && Object.getOwnPropertyDescriptor(proto, "value");
     if (setter && setter.set) setter.set.call(el, v);

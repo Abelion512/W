@@ -68,6 +68,9 @@ LOG_PATH = ROOT / "logs" / "bridge_debug.log"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("ZS_BRIDGE_PORT", "17613"))
 MCP_PROTOCOL_VERSION = "2024-11-05"
+# One pattern for the WebSocket handshake: all three browser extension schemes,
+# each with a non-empty extension id. Reused by run() and asserted by tests.
+EXTENSION_ORIGIN_PATTERN = re.compile(r"^(?:chrome|moz|safari-web)-extension://.+$")
 BRIDGE_VERSION = "3.10.0"
 MAX_LOG_CHARS = 1000
 # Auto-recovery backoff for dead MCP subprocesses: 5s, 10s, 20s, ... capped.
@@ -368,6 +371,9 @@ class MCPServer:
                         message = json.loads(line.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     log(f"[{self.server_id}] ignored non-JSON MCP stdout.")
+                    continue
+                if not isinstance(message, dict):
+                    log(f"[{self.server_id}] ignored non-object MCP stdout.")
                     continue
                 request_id = message.get("id")
                 if isinstance(request_id, int):
@@ -991,7 +997,7 @@ class Bridge:
                 {"type": "tool_result", "id": request_id, "ok": False, "error": "Invalid tool call."},
             )
             return
-        if self._context_only:
+        if self._context_only and websocket is self._prompt_owner:
             await self._send_client(
                 websocket,
                 {
@@ -1096,7 +1102,8 @@ class Bridge:
             result = await server.call_tool(tool_name, arguments, timeout_seconds)
             text_parts = []
             images = []
-            for item in result.get("content", []):
+            content = result.get("content", [])
+            for item in content if isinstance(content, list) else []:
                 if not isinstance(item, dict):
                     continue
                 if item.get("type") == "text" and isinstance(item.get("text"), str):
@@ -1110,7 +1117,10 @@ class Bridge:
                     )
             structured = result.get("structuredContent")
             if not text_parts and structured is not None:
-                text_parts.append(json.dumps(structured, ensure_ascii=False))
+                try:
+                    text_parts.append(json.dumps(structured, ensure_ascii=False))
+                except (TypeError, ValueError):
+                    text_parts.append(str(structured))
             text = "\n".join(text_parts)
             if result.get("isError"):
                 await self._send_client(
@@ -1269,11 +1279,12 @@ async def run() -> None:
     # origins at the WebSocket handshake itself. Any extension ID is accepted
     # (unpacked installs derive a different ID per machine); a hostile
     # extension is gated by the bridge token, not by this list.
-    allowed_origins = [None, re.compile(r"chrome-extension://.*"), re.compile(r"moz-extension://.*")]
+    allowed_origins = [None, EXTENSION_ORIGIN_PATTERN]
     server = await websockets.serve(
         bridge.handle_client,
         HOST,
         PORT,
+        origins=allowed_origins,
         max_size=128 * 1024 * 1024,
         max_queue=256,
         ping_interval=20,
@@ -1350,17 +1361,10 @@ async def run() -> None:
 
 
 async def _monitor_servers(bridge: Bridge) -> None:
-    failures: Dict[str, int] = {}
-    next_try: Dict[str, float] = {}
-
-    def _state() -> Tuple[Tuple[str, bool], ...]:
-        return tuple(sorted((s.server_id, s.alive) for s in bridge.servers.values()))
-
-    last_state = _state()
     while True:
         await asyncio.sleep(5)
         changed = False
-        for server in bridge.servers.values():
+        for server in list(bridge.servers.values()):
             if server.alive:
                 continue
             if server.next_restart_at > time.monotonic():

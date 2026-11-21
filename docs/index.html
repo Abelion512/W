@@ -12,6 +12,28 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://herdodp.github.io/snapgent-connector/">
   <meta property="og:image" content="https://herdodp.github.io/snapgent-connector/assets/icon.png">
+  <meta property="og:site_name" content="snapgentV3">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="snapgentV3: Connect your browser AI chat to your apps through MCP">
+  <meta name="twitter:description" content="A browser extension and a local bridge that connect a normal AI chat to apps on your computer through MCP. Free and open source.">
+  <meta name="twitter:image" content="https://herdodp.github.io/snapgent-connector/assets/icon.png">
+  <link rel="canonical" href="https://herdodp.github.io/snapgent-connector/">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "snapgentV3",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Windows, macOS, Linux",
+    "softwareVersion": "3.9.9",
+    "description": "A free, open source browser extension and local bridge that lets the AI chat you already use control apps on your computer through MCP, such as VS Code, Roblox Studio and EffectCraft.",
+    "url": "https://herdodp.github.io/snapgent-connector/",
+    "image": "https://herdodp.github.io/snapgent-connector/assets/icon.png",
+    "downloadUrl": "https://github.com/herdodp/snapgent-connector/releases/latest",
+    "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+  }
+  </script>
   <link rel="icon" href="assets/icon.png" type="image/png">
   <link rel="stylesheet" href="styles.css?v=4">
   <script>document.documentElement.classList.add('js');</script>
@@ -33,6 +55,7 @@
         <a href="#how-it-works">How it works</a>
         <a href="#targets">Targets</a>
         <a href="#providers">Providers</a>
+        <a href="#app">App</a>
         <a href="#install">Install</a>
         <a href="https://github.com/herdodp/snapgent-connector" target="_blank" rel="noopener">GitHub</a>
       </nav>
@@ -81,8 +104,6 @@
             <li><span class="trace-who">Bridge</span><p>Routes it to the MCP server of the target you selected.</p></li>
             <li><span class="trace-who">Chat</span><p>Receives the result, and the AI continues from there.</p></li>
           </ol>
-          <p class="caption">This is what a command looks like in a reply:</p>
-<pre class="code" tabindex="0"><code>{"command":"read_file","params":{"path":"README.md"}}</code></pre>
         </div>
       </div>
     </section>
@@ -95,7 +116,7 @@
           <section aria-labelledby="t-vscode">
             <h3 id="t-vscode">VS Code <small>default</small></h3>
             <ul>
-              <li>Read and search files</li><li>Edit, create, move, copy</li><li>Git status, diff, add, commit</li><li>Run scripts and tests</li>
+              <li>Read and search files</li><li>Edit, create, move, copy</li><li>Git status, diff, add, commit</li><li>Run scripts and tests</li><li>Reusable skills from <code>.snapgent/skills</code></li>
             </ul>
           </section>
           <section aria-labelledby="t-roblox">
@@ -119,20 +140,6 @@
         </div>
         <p class="note" style="margin-top:1.75rem">Available commands depend on the target. Ask the AI to run <code>list_commands</code> to see exactly what the selected target offers.</p>
       </div>
-    </section>
-
-    <section class="section wrap" aria-labelledby="guard-title">
-      <h2 id="guard-title">Where it <mark>says no</mark>.</h2>
-      <p class="muted lede">These limits are built in, so they hold whatever the AI asks for. The examples below are from the built-in VS Code server.</p>
-      <dl class="guards">
-        <div><dt>Target isolation</dt><dd>The AI can only list and use the MCP server you selected. Other servers, even enabled ones, stay invisible, and a disabled server cannot be used.</dd></div>
-        <div><dt>delete_file</dt><dd>Deletes one file. Directories, the workspace root and anything under <code>.git</code> are refused.</dd></div>
-        <div><dt>apply_patch</dt><dd>Applies several exact replacements to one file. Each <code>old_text</code> must match exactly once, and nothing is written if any edit fails.</dd></div>
-        <div><dt>git_add</dt><dd>Stages the paths you name. Staging the whole workspace is refused.</dd></div>
-        <div><dt>git_commit</dt><dd>Commits what is already staged. It never stages files itself and has no amend option.</dd></div>
-        <div><dt>create_file, move_file, copy_file</dt><dd>Never overwrite an existing destination.</dd></div>
-        <div><dt>edit_file</dt><dd>Replaces an exact snippet, which must be unique unless <code>replace_all</code> is set.</dd></div>
-      </dl>
     </section>
 
     <section class="section wrap" id="providers" aria-labelledby="prov-title">
@@ -161,6 +168,15 @@
           </table>
         </div>
       </div>
+    </section>
+
+    <section class="section wrap" id="app" aria-labelledby="app-title">
+      <h2 id="app-title">Prefer an app? <mark>Snapgent App</mark> for Windows.</h2>
+      <p class="muted lede">Snapgent App is a standalone desktop app with a built-in AI browser, a toolbar and the bridge included. It needs no Chrome or Edge, no <code>start.bat</code>, no Python and no Node.js. Open it, choose your project folder in the toolbar, and chat as usual.</p>
+      <div class="actions">
+        <a class="btn btn-primary" href="https://github.com/herdodp/snapgent-connector/releases/tag/app-v0.1.1" target="_blank" rel="noopener">Download Snapgent App 0.1.1</a>
+      </div>
+      <p class="note" style="margin-top:1.5rem">Early release (0.1.1). The installer is not code-signed, so Windows SmartScreen may warn: choose More info, then Run anyway. Google sign-in has not been fully tested, so log in with email and password on the Claude page if it fails. Windows only.</p>
     </section>
 
     <section class="band" id="install" aria-labelledby="install-title">
@@ -199,7 +215,6 @@
           <div><dt>The AI answers without using tools</dt><dd>Remind it to use snapgentV3 commands, or start a new chat.</dd></div>
           <div><dt>The target does not respond</dt><dd>Check that the app is open and its MCP server is running, then switch the target in the selector. After a switch the page reloads, and a running session in that tab has to be started again.</dd></div>
         </dl>
-        <p class="note" style="margin-top:1.5rem">The <a href="https://github.com/herdodp/snapgent-connector#readme" target="_blank" rel="noopener">README</a> has the detection details for each system.</p>
       </div>
     </section>
   </main>
@@ -211,13 +226,14 @@
           <img src="assets/icon.png" alt="" width="32" height="32">
           <span>snapgent<span class="brand-v">V3</span></span>
         </a>
-        <p class="muted">Free and open source under GPL-3.0. Latest release: V3.9.</p>
+        <p class="muted">Free and open source under GPL-3.0. Latest release: V3.9.9.</p>
       </div>
       <ul class="footer-links">
         <li><a href="https://github.com/herdodp/snapgent-connector" target="_blank" rel="noopener">GitHub</a></li>
         <li><a href="https://github.com/herdodp/snapgent-connector/releases/latest" target="_blank" rel="noopener">Releases</a></li>
         <li><a href="https://github.com/herdodp/snapgent-connector/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a></li>
         <li><a href="https://github.com/herdodp/snapgent-connector/issues" target="_blank" rel="noopener">Issues</a></li>
+        <li><a href="https://discord.gg/rvaZ8KkvAX" target="_blank" rel="noopener">Discord</a></li>
         <li><a href="https://github.com/herdodp/snapgent-connector/blob/main/LICENSE" target="_blank" rel="noopener">License</a></li>
       </ul>
     </div>

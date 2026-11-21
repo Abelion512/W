@@ -8,22 +8,12 @@
 // even when the bridge is offline. The agentic loop must never hang waiting.
 
 // Classic service worker (no "type": "module"), so shared code is pulled in with
-// importScripts. core/pairing.js builds the handshake URL and classifies closes.
-// Node tests inject ZSPairing directly, so import only when running in a worker.
-if (typeof importScripts === "function" && typeof ZSPairing === "undefined") {
+// importScripts. core/pairing.js builds the handshake URL and classifies closes;
+// core/guard.js holds the shared heartbeat/retry policy (upstream 0110dec).
+// Guard the calls so Node stub-DOM tests can evaluate this file without a worker.
+if (typeof importScripts === "function") {
   importScripts("core/pairing.js");
-}
-// Shared execution policy, so the heartbeat runs the SAME rule the tests pin.
-// core/guard.js is plain top-level script (no modules), so importing it here
-// defines the identical `ZSGuard` binding in the worker global scope that the
-// content scripts get from manifest.json. Without this the worker carried an
-// inline copy of the rule while the tests covered the guard.js one - the very
-// "tested logic is not the running logic" mistake the retry path already had.
-//
-// `importScripts` only exists in the worker; node-based tests inject ZSGuard
-// themselves (see test-background.js), so the absence of it is not an error.
-if (typeof importScripts === "function" && typeof ZSGuard === "undefined") {
-  try { importScripts("core/guard.js"); } catch (e) { console.warn("guard.js not loaded:", e); }
+  if (typeof ZSGuard === "undefined") importScripts("core/guard.js");
 }
 
 const PORT = 17613;
@@ -50,6 +40,9 @@ const CATEGORY_TIER = {
   classify: "light",
   "code-edit": "balanced",
   debug: "balanced",
+  realtime: "balanced",
+  chat: "light",
+  orchestrate: "deep",
   review: "deep",
   architecture: "deep",
   security: "deep",
@@ -71,7 +64,8 @@ const CATEGORY_PROVIDERS = {
   chat: ["rudder", "mistral", "gemini"],
   orchestrate: ["chatgpt", "claude", "kimi"],
 };
-// Declared complexity beats the category default when both are present.
+// A category's provider list outranks complexity on purpose; see docs/model-routing.md.
+// Complexity only picks the tier when no category list applies.
 const COMPLEXITY_TIER = { low: "light", medium: "balanced", high: "deep" };
 const PROVIDER_HOSTS = {
   deepseek: ["chat.deepseek.com"],
@@ -91,23 +85,67 @@ const PROVIDER_HOSTS = {
   manus: ["manus.im"],
 };
 
+// Capabilities for A2A metadata filters. Source: docs/WEB_AI_CAPABILITIES.md.
+const PROVIDER_CAPABILITIES = {
+  gemini:   { vision: true,  webSearch: false, largeInput: false },
+  glm:      { vision: true,  webSearch: false, largeInput: false },
+  kimi:     { vision: true,  webSearch: false, largeInput: false },
+  meta:     { vision: true,  webSearch: false, largeInput: false },
+  arena:    { vision: true,  webSearch: false, largeInput: true },
+  chatgpt:  { vision: false, webSearch: true,  largeInput: false },
+  claude:   { vision: false, webSearch: false, largeInput: false },
+  grok:     { vision: false, webSearch: true,  largeInput: false },
+  mistral:  { vision: false, webSearch: true,  largeInput: false },
+  rudder:   { vision: false, webSearch: false, largeInput: false },
+  ptero:    { vision: false, webSearch: false, largeInput: false },
+  // Vision is a per-model DOM getter in the content script, unknowable here.
+  deepseek: { vision: false, webSearch: true,  largeInput: true },
+  qwen:     { vision: false, webSearch: false, largeInput: true },
+  manus:    { vision: false, webSearch: false, largeInput: false },
+};
+
 function routeFor(metadata) {
   const m = metadata && typeof metadata === "object" ? metadata : {};
   // Explicit pin first: one provider, no fallback chain. Used by callers that
   // need a specific site (an A/B comparison, or a provider the harness knows is
   // free), and by the live test harness to reach each provider in turn.
   const pinned = String(m.provider || "").toLowerCase();
-  if (PROVIDER_HOSTS[pinned]) return { tier: "pinned", providers: [pinned] };
   const tier = String(m.modelTier || "").toLowerCase();
-  if (TIER_PROVIDERS[tier]) return { tier, providers: TIER_PROVIDERS[tier] };
   const category = String(m.taskCategory || "").toLowerCase();
-  if (CATEGORY_PROVIDERS[category]) {
-    return { tier: CATEGORY_TIER[category] || "balanced", providers: CATEGORY_PROVIDERS[category] };
-  }
   const complexity = String(m.complexity || "").toLowerCase();
-  const derived = COMPLEXITY_TIER[complexity] || CATEGORY_TIER[category];
-  if (derived) return { tier: derived, providers: TIER_PROVIDERS[derived] };
-  return null;
+  // Base chain: pin > modelTier > category > complexity. Same as before.
+  let baseRoute = null;
+  if (PROVIDER_HOSTS[pinned]) baseRoute = { tier: "pinned", providers: [pinned] };
+  else if (TIER_PROVIDERS[tier]) baseRoute = { tier, providers: TIER_PROVIDERS[tier] };
+  else if (CATEGORY_PROVIDERS[category]) {
+    baseRoute = { tier: CATEGORY_TIER[category] || "balanced", providers: CATEGORY_PROVIDERS[category] };
+  } else {
+    const derived = COMPLEXITY_TIER[complexity] || CATEGORY_TIER[category];
+    if (derived) baseRoute = { tier: derived, providers: TIER_PROVIDERS[derived] };
+  }
+  if (!baseRoute) return null;
+
+  const needsVision = m.needsVision === true;
+  const needsWeb = m.needsWeb === true;
+  const largeInput = m.largeInput === true;
+  const avoid = m.avoidProviders;
+  const hasAvoid = Array.isArray(avoid) && avoid.length > 0;
+  if (!needsVision && !needsWeb && !largeInput && !hasAvoid) return baseRoute;
+
+  const avoided = new Set(hasAvoid ? avoid.map((id) => String(id).toLowerCase()) : []);
+  const baseProviders = baseRoute.providers;
+  const filtered = baseProviders.filter((id) => {
+    const caps = PROVIDER_CAPABILITIES[id] || {};
+    if (needsVision && caps.vision !== true) return false;
+    if (needsWeb && caps.webSearch !== true) return false;
+    if (largeInput && caps.largeInput !== true) return false;
+    if (avoided.has(id)) return false;
+    return true;
+  });
+  if (filtered.length === 0) {
+    return { ...baseRoute, providers: baseProviders, capabilityFallback: true };
+  }
+  return { ...baseRoute, providers: filtered };
 }
 
 // The only place a provider tab is chosen from a route. Returns null when no
@@ -238,11 +276,20 @@ function readBridgeToken() {
 // default `authRequired = false` and redial a bridge that already refused us.
 let lastUsage = null;
 const authReady = new Promise((resolve) => {
-  chrome.storage.local.get([AUTH_STATE_KEY, "lastUsage"], (stored) => {
-    authRequired = !!(stored && stored[AUTH_STATE_KEY]);
-    lastUsage = (stored && stored.lastUsage) || null;
-    resolve();
-  });
+  // Mirror readBridgeToken's timeout: a storage callback that never fires must
+  // not block every future dial for the life of the worker.
+  let settled = false;
+  const finish = () => { if (!settled) { settled = true; resolve(); } };
+  setTimeout(finish, 2000);
+  try {
+    chrome.storage.local.get([AUTH_STATE_KEY, "lastUsage"], (stored) => {
+      authRequired = !!(stored && stored[AUTH_STATE_KEY]);
+      lastUsage = (stored && stored.lastUsage) || null;
+      finish();
+    });
+  } catch {
+    finish();
+  }
 });
 
 async function connect() {
@@ -303,6 +350,8 @@ async function connect() {
     bridgeStatusCache = null;
     bridgeStatusAt = 0;
     stopHeartbeat();
+    // A dropped socket will never deliver prompt_result or cancel_prompt.
+    promptTabs.clear();
     failAllPending("bridge connection closed");
     broadcastStatus();
     // 1008 is the bridge refusing our token, and redialling just repeats the
@@ -331,49 +380,36 @@ function scheduleReconnect() {
 
 function startHeartbeat() {
   stopHeartbeat();
-  heartbeatTimer = setInterval(async () => {
-    if (connected) {
-      // Half-open socket: the WS still reports OPEN but nothing comes through.
-      //
-      // STALENESS IS PROVED, NOT GUESSED. Chrome suspends an idle MV3 service
-      // worker and setInterval does not run while suspended, so on wake-up
-      // lastMessageAt is ALWAYS older than STALE_SOCKET_MS. Closing on elapsed
-      // time alone therefore killed a perfectly healthy socket, onclose
-      // reconnected, the worker idled again and the cycle repeated (measured:
-      // 203 connect/disconnect events in a day while a manual ping answered in
-      // 1 ms). So ask the bridge for a real pong and close only when it does
-      // not answer.
-      //
-      // The decision itself lives in ZSGuard.heartbeatDecision (imported at the
-      // top of this file) so the tested rule is the rule that runs.
-      const decision = ZSGuard.heartbeatDecision({
-        now: Date.now(),
-        lastMessageAt,
-        staleMs: STALE_SOCKET_MS,
-      });
-      if (decision.shouldProbe) {
-        const pong = await send({ type: "ping" }, 4000).catch(() => null);
-        const answered = !!(pong && pong.ok);
+  heartbeatTimer = setInterval(() => {
+    if (!connected) return;
+    // Shared rule from core/guard.js: elapsed time alone is not proof of a dead
+    // socket (an idle MV3 worker is suspended). Probe first, close only when no
+    // pong arrives. The rule is imported, not copied, so tests pin what runs.
+    const decision = ZSGuard.heartbeatDecision({ lastMessageAt, staleMs: STALE_SOCKET_MS });
+    if (decision.shouldProbe) {
+      send({ type: "ping" }, 4000).then((pong) => {
+        const answered = !!(pong && (pong.type === "pong" || pong.ok));
         const final = ZSGuard.heartbeatDecision({
-          now: Date.now(),
-          lastMessageAt,
-          staleMs: STALE_SOCKET_MS,
-          pongAnswered: answered,
+          lastMessageAt, staleMs: STALE_SOCKET_MS, pongAnswered: answered,
         });
-        if (connected && final.close) {
-          log("socket stale after failed ping, forcing reconnect");
+        if (final.close) {
+          log("socket stale, forcing reconnect");
           try { ws.close(); } catch {}
-        } else {
-          // The bridge answered, so the socket is healthy: the gap was the
-          // suspended worker, not a dead half-open socket.
-          lastMessageAt = Date.now();
         }
-        return;
-      }
-      // Keeps the MV3 service worker alive AND detects a half-open socket.
-      send({ type: "ping" }).catch(() => {});
-      refreshStudioStatus();
+      }).catch(() => {
+        const final = ZSGuard.heartbeatDecision({
+          lastMessageAt, staleMs: STALE_SOCKET_MS, pongAnswered: false,
+        });
+        if (final.close) {
+          log("socket stale, forcing reconnect");
+          try { ws.close(); } catch {}
+        }
+      });
+      return;
     }
+    // Keeps the MV3 service worker alive AND detects a half-open socket.
+    send({ type: "ping" }).catch(() => {});
+    refreshStudioStatus();
   }, HEARTBEAT_MS);
 }
 
@@ -597,7 +633,7 @@ function handleBridgeMessage(msg) {
 // content script answers later via an "a2a_result" runtime message. An MV3
 // worker eviction between the two hops is expected and handled by reconnect.
 // promptId → tabId, so a bridge-side timeout can reach the right tab. Bounded:
-// a result or a cancel removes the entry, and stale ones expire.
+// a result or a cancel removes the entry, and a dropped socket clears the rest.
 const promptTabs = new Map();
 function cancelPrompt(promptId) {
   const tabId = promptTabs.get(promptId);
@@ -737,6 +773,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: false, kind: "error", error: String(e) });
         });
         break;
+      // Liveness probe for the content script: a healthy bridge answers in
+      // milliseconds. Without this case a ping fell through to "unknown
+      // message", which callers read as a bridge outage.
+      case "ping": {
+        const r = await send({ type: "ping" }, 6000);
+        sendResponse(r && r.type === "pong"
+          ? { ok: true }
+          : { ok: false, kind: (r && r.kind) || "no_pong", error: (r && r.error) || "bridge did not answer the ping" });
+        break;
+      }
       case "list_tools": {
         // Prefer a live refresh; fall back to cache so the loop never stalls.
         // 10s, not 25s: a catalogue request only blocks this long when one of the

@@ -232,7 +232,7 @@ return P.itemText(P.lastAssistant()) || "";
   chosen tab and relays `a2a_result` back to the bridge (stubbed `chrome` and
   `WebSocket`, no npm).
 
-Run: `python3 -m unittest` and `node snapgent-extension/test-a2a.js`.
+Run: `python3 -m unittest discover -s tests` and `node snapgent-extension/test-a2a.js`.
 
 ## Risks
 
