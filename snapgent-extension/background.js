@@ -9,7 +9,10 @@
 
 // Classic service worker (no "type": "module"), so shared code is pulled in with
 // importScripts. core/pairing.js builds the handshake URL and classifies closes.
-importScripts("core/pairing.js");
+// Node tests inject ZSPairing directly, so import only when running in a worker.
+if (typeof importScripts === "function" && typeof ZSPairing === "undefined") {
+  importScripts("core/pairing.js");
+}
 // Shared execution policy, so the heartbeat runs the SAME rule the tests pin.
 // core/guard.js is plain top-level script (no modules), so importing it here
 // defines the identical `ZSGuard` binding in the worker global scope that the
