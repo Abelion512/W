@@ -85,23 +85,67 @@ const PROVIDER_HOSTS = {
   manus: ["manus.im"],
 };
 
+// Capabilities for A2A metadata filters. Source: docs/WEB_AI_CAPABILITIES.md.
+const PROVIDER_CAPABILITIES = {
+  gemini:   { vision: true,  webSearch: false, largeInput: false },
+  glm:      { vision: true,  webSearch: false, largeInput: false },
+  kimi:     { vision: true,  webSearch: false, largeInput: false },
+  meta:     { vision: true,  webSearch: false, largeInput: false },
+  arena:    { vision: true,  webSearch: false, largeInput: true },
+  chatgpt:  { vision: false, webSearch: true,  largeInput: false },
+  claude:   { vision: false, webSearch: false, largeInput: false },
+  grok:     { vision: false, webSearch: true,  largeInput: false },
+  mistral:  { vision: false, webSearch: true,  largeInput: false },
+  rudder:   { vision: false, webSearch: false, largeInput: false },
+  ptero:    { vision: false, webSearch: false, largeInput: false },
+  // Vision is a per-model DOM getter in the content script, unknowable here.
+  deepseek: { vision: false, webSearch: true,  largeInput: true },
+  qwen:     { vision: false, webSearch: false, largeInput: true },
+  manus:    { vision: false, webSearch: false, largeInput: false },
+};
+
 function routeFor(metadata) {
   const m = metadata && typeof metadata === "object" ? metadata : {};
   // Explicit pin first: one provider, no fallback chain. Used by callers that
   // need a specific site (an A/B comparison, or a provider the harness knows is
   // free), and by the live test harness to reach each provider in turn.
   const pinned = String(m.provider || "").toLowerCase();
-  if (PROVIDER_HOSTS[pinned]) return { tier: "pinned", providers: [pinned] };
   const tier = String(m.modelTier || "").toLowerCase();
-  if (TIER_PROVIDERS[tier]) return { tier, providers: TIER_PROVIDERS[tier] };
   const category = String(m.taskCategory || "").toLowerCase();
-  if (CATEGORY_PROVIDERS[category]) {
-    return { tier: CATEGORY_TIER[category] || "balanced", providers: CATEGORY_PROVIDERS[category] };
-  }
   const complexity = String(m.complexity || "").toLowerCase();
-  const derived = COMPLEXITY_TIER[complexity] || CATEGORY_TIER[category];
-  if (derived) return { tier: derived, providers: TIER_PROVIDERS[derived] };
-  return null;
+  // Base chain: pin > modelTier > category > complexity. Same as before.
+  let baseRoute = null;
+  if (PROVIDER_HOSTS[pinned]) baseRoute = { tier: "pinned", providers: [pinned] };
+  else if (TIER_PROVIDERS[tier]) baseRoute = { tier, providers: TIER_PROVIDERS[tier] };
+  else if (CATEGORY_PROVIDERS[category]) {
+    baseRoute = { tier: CATEGORY_TIER[category] || "balanced", providers: CATEGORY_PROVIDERS[category] };
+  } else {
+    const derived = COMPLEXITY_TIER[complexity] || CATEGORY_TIER[category];
+    if (derived) baseRoute = { tier: derived, providers: TIER_PROVIDERS[derived] };
+  }
+  if (!baseRoute) return null;
+
+  const needsVision = m.needsVision === true;
+  const needsWeb = m.needsWeb === true;
+  const largeInput = m.largeInput === true;
+  const avoid = m.avoidProviders;
+  const hasAvoid = Array.isArray(avoid) && avoid.length > 0;
+  if (!needsVision && !needsWeb && !largeInput && !hasAvoid) return baseRoute;
+
+  const avoided = new Set(hasAvoid ? avoid.map((id) => String(id).toLowerCase()) : []);
+  const baseProviders = baseRoute.providers;
+  const filtered = baseProviders.filter((id) => {
+    const caps = PROVIDER_CAPABILITIES[id] || {};
+    if (needsVision && caps.vision !== true) return false;
+    if (needsWeb && caps.webSearch !== true) return false;
+    if (largeInput && caps.largeInput !== true) return false;
+    if (avoided.has(id)) return false;
+    return true;
+  });
+  if (filtered.length === 0) {
+    return { ...baseRoute, providers: baseProviders, capabilityFallback: true };
+  }
+  return { ...baseRoute, providers: filtered };
 }
 
 // The only place a provider tab is chosen from a route. Returns null when no

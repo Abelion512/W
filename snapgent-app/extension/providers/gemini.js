@@ -466,11 +466,46 @@ const ZSProvider = (() => {
     if (b) try { b.click(); } catch {}
   }
 
-  // No site modes to enforce on Gemini (model picker is left to the user).
+  // A2A runs pin Gemini 4 Hydrogen with thinking level High. Restore that at
+  // session startup only; the user stays free to change the picker afterwards.
+  async function ensureFocusMode() {
+    const modelButton = () =>
+      [...document.querySelectorAll("button")].find(
+        (b) => b.offsetParent !== null && /hydrogen|neon/i.test(b.textContent || "")
+      );
+    const item = (re) =>
+      [...document.querySelectorAll("gem-menu-item")].find(
+        (m) => m.getAttribute("role") === "menuitemradio" && re.test((m.textContent || "").trim())
+      );
+    const selected = (m) => !!m && /\bselected\b/.test(String(m.className || ""));
+    const btn = modelButton();
+    if (!btn) return;
+    if (!document.querySelector("gem-menu-item")) {
+      try { btn.click(); } catch {}
+    }
+    for (let i = 0; i < 20; i++) {
+      if (item(/4 Hydrogen/i) && item(/^High\b/i)) break;
+      await sleep(150);
+    }
+    const model = item(/4 Hydrogen/i);
+    if (model && !selected(model)) { try { model.click(); } catch {} }
+    await sleep(200);
+    const high = item(/^High\b/i);
+    if (high && !selected(high)) { try { high.click(); } catch {} }
+    await waitFor(() => {
+      const b = modelButton();
+      return !!b && /\bhigh\b/i.test(b.textContent || "");
+    }, 4000);
+    try { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch {}
+  }
+
+  // No other site modes to enforce on Gemini.
   function enforceComposer() { return { ready: true }; }
   async function ensureComposerReady(reason) {
-    diag("mode_ready", { reason, provider: "gemini" });
-    return { ready: !!getEditor() };
+    if (reason === "startup") await ensureFocusMode();
+    const state = { ready: !!getEditor(), model: "4 Hydrogen", thinking: "High" };
+    diag("mode_ready", { reason, provider: "gemini", ...state });
+    return state;
   }
 
   // ── Error / limit detection (site chrome only) ────────────────────────────

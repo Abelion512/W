@@ -400,12 +400,8 @@ const ZSProvider = (() => {
         try { deepThink.click(); } catch (e) { diag("mode_fallback", { reason, target: "deepThink", error: String(e && e.message || e) }); }
       }
 
-      // Search must be off (it derails the agent). Best-effort; absent in Expert.
-      const search = findToggleBy(RE.searchMode);
-      if (search && isPressedOn(search)) {
-        try { search.click(); } catch (e) { diag("mode_fallback", { reason, target: "search", error: String(e && e.message || e) }); }
-      }
-
+      // Search is user-controlled. The A2A runs pin DeepSeek with DeepThink and
+      // web search on, so never override the user's choice at session start.
       const state = composerModeState();
       diag("mode_enforce", { reason, ...state });
       return state;
@@ -422,19 +418,18 @@ const ZSProvider = (() => {
     for (let i = 0; i < 12; i++) {
       state = enforceComposer(reason);
       // Ready as soon as an agent-usable model is on (Expert, or Vision/Instant if
-      // the user chose one) and Search is off. DeepThink is only required if a
-      // legacy toggle is actually present (V4 has none).
+      // the user chose one). DeepThink is only required if a legacy toggle is
+      // actually present (V4 has none). Search stays as the user set it.
       const anyModel = state.expertOn || state.visionOn || state.instantOn ||
         (!state.expertFound && !state.visionFound && !state.instantFound);
-      if (anyModel && state.searchOff && (state.deepThinkOn || !state.deepThinkFound)) break;
+      if (anyModel && (state.deepThinkOn || !state.deepThinkFound)) break;
       await sleep(120);
     }
     state = composerModeState();
-    // Unified model (2026-09): no model tabs exist, so there is nothing to pick -
-    // ready once Search is off.
+    // Unified model (2026-09): no model tabs exist, so there is nothing to pick.
     const unified = !state.expertFound && !state.visionFound && !state.instantFound;
     diag("mode_ready", { reason, unified, ...state });
-    return { ...state, unified, ready: state.expertOn || state.visionOn || state.instantOn || (unified && state.searchOff) };
+    return { ...state, unified, ready: state.expertOn || state.visionOn || state.instantOn || unified };
   }
 
   // DeepSeek's footer button doubles as SEND (an upward arrow) and STOP (a
