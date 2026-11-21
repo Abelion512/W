@@ -625,8 +625,6 @@ class Bridge:
             await client.send(payload)
         except Exception as error:
             log(f"send to client failed: {type(error).__name__}: {str(error)[:200]}")
-        except Exception as error:
-            log(f"bridge: failed to send to client: {error}")
             return False
         return True
 
