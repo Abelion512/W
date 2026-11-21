@@ -58,14 +58,18 @@ byte count and any skipped entries, so the caller can audit what was shared.
   of sending an empty context.
 - The task id is sanitized before it becomes a directory name, so it cannot
   escape the destination.
+- Task directories are mode `0700` and copied files `0600`, so other local users
+  cannot read context handed to the web model.
+- On each `prepare()` call, task directories older than `ZS_CONTEXT_TTL_SECONDS`
+  (default 86400, i.e. 24 hours) are removed. Set it to `0` to keep them forever.
 
 `ZS_CONTEXT_DIR` overrides where copies are written (default
 `<repo>/.snapgent/context`).
 
 ## Tool-level enforcement
 
-Set `"contextOnly": true` next to `contextFiles` and the bridge rejects **every**
-`call_tool` while that task runs:
+Set `"contextOnly": true` next to `contextFiles` and the bridge rejects tool
+calls from the socket that owns that task while it runs:
 
 ```json
 "metadata": {

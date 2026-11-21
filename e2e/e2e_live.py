@@ -230,10 +230,11 @@ async def run_checks(port, token):
                           r.get("ok") is False,
                           r.get("text", "") or r.get("error", ""))
                 else:
-                    check("sandbox_network_skipped", True,
+                    # A skipped security assertion must not be recorded as a pass.
+                    check("sandbox_network_unsupported", False,
                           "unshare-net unsupported in this environment")
             else:
-                check("sandbox_skipped", True, "bwrap unavailable")
+                check("sandbox_unavailable", False, "bwrap unavailable")
 
             # write / edit / read / delete roundtrip
             r = await call(ws, 13, "write_file",

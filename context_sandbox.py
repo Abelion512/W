@@ -13,13 +13,17 @@ symlinks that resolve outside the root are rejected, not followed.
 stdlib only.
 """
 
+import os
 import shutil
+import time
+from itertools import islice
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 DEFAULT_MAX_FILES = 50
 DEFAULT_MAX_FILE_BYTES = 64 * 1024
 DEFAULT_MAX_BYTES = 256 * 1024
+DEFAULT_TTL_SECONDS = 24 * 60 * 60
 
 
 class ContextSandboxError(ValueError):
@@ -34,7 +38,12 @@ def _safe_relpath(raw: Any, root: Path) -> Path:
         raise ContextSandboxError("absolute paths are not allowed")
     if any(part in ("..", "") for part in candidate.parts):
         raise ContextSandboxError("parent segments are not allowed")
-    resolved = (root / candidate).resolve()
+    try:
+        resolved = (root / candidate).resolve()
+    except (OSError, ValueError) as error:
+        # NUL bytes and other malformed names must be skipped, not abort the
+        # whole task: prepare()'s contract is that bad entries go to skipped.
+        raise ContextSandboxError(str(error)) from error
     if resolved != root and root not in resolved.parents:
         raise ContextSandboxError("path escapes the repository root")
     return candidate
@@ -61,6 +70,25 @@ def _render(entries: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _cleanup_expired(dest_root: Path, ttl_seconds: int) -> None:
+    """Drop task directories older than the TTL; the copies can hold secrets."""
+    if ttl_seconds <= 0:
+        return
+    cutoff = time.time() - ttl_seconds
+    try:
+        candidates = list(dest_root.iterdir())
+    except OSError:
+        return
+    for path in candidates:
+        if not path.is_dir():
+            continue
+        try:
+            if path.stat().st_mtime < cutoff:
+                shutil.rmtree(path)
+        except OSError:
+            pass
+
+
 def prepare(
     files: Iterable[Any],
     task_id: str,
@@ -69,6 +97,7 @@ def prepare(
     max_files: int = DEFAULT_MAX_FILES,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
     max_bytes: int = DEFAULT_MAX_BYTES,
+    ttl_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Copy the requested files and return a manifest plus the prompt block.
 
@@ -78,15 +107,24 @@ def prepare(
     """
     root = Path(root).resolve()
     dest_root = Path(dest_root) if dest_root is not None else root / ".snapgent" / "context"
+    if ttl_seconds is None:
+        try:
+            ttl_seconds = int(os.environ.get("ZS_CONTEXT_TTL_SECONDS", str(DEFAULT_TTL_SECONDS)))
+        except ValueError:
+            ttl_seconds = DEFAULT_TTL_SECONDS
+    _cleanup_expired(dest_root, ttl_seconds)
     dest = (dest_root / _safe_task_id(task_id)).resolve()
     dest.mkdir(parents=True, exist_ok=True)
+    # Context files can contain secrets handed to a web model. Keep the task
+    # directory and its copies readable only by this user.
+    dest.chmod(0o700)
 
     copied: List[str] = []
     skipped: List[Dict[str, str]] = []
     entries: List[Dict[str, Any]] = []
     total = 0
 
-    for raw in list(files)[:max_files]:
+    for raw in islice(files, max_files):
         try:
             rel = _safe_relpath(raw, root)
         except ContextSandboxError as error:
@@ -110,7 +148,9 @@ def prepare(
         target = dest / rel
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.chmod(0o700)
             shutil.copyfile(source, target)
+            target.chmod(0o600)
             text = source.read_text(encoding="utf-8", errors="replace")
         except OSError as error:
             skipped.append({"path": rel.as_posix(), "reason": str(error)})

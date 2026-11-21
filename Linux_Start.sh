@@ -12,7 +12,9 @@ ZS_TERMINAL_WORKDIR="${PWD}"
 # resolved against ZS_PROJECTS_ROOT (or the folder containing this repo,
 # or the current directory). Lets you switch projects with just
 # `bash Linux_Start.sh CyClops`.
-if [ -n "${1:-}" ]; then
+# --check/-c are handled below, after the interpreter is found; do not mistake
+# them for a project name here.
+if [ -n "${1:-}" ] && [ "${1:-}" != "--check" ] && [ "${1:-}" != "-c" ]; then
     arg="$1"
     if [ -d "$arg" ]; then
         ZS_WORKSPACE_ROOT="$arg"
@@ -124,7 +126,7 @@ else:
         print(f"        auth: enabled, token file {path} (mode {mode})")
     else:
         print(f"        auth: enabled, token will be created at {path} on first start")
-print("        origin: chrome-extension:// only (no Origin = native client)")
+print("        origin: allowlisted browser extensions (no Origin = native client)")
 print(f"        endpoint: ws://127.0.0.1:{os.environ.get('ZS_BRIDGE_PORT') or bridge.PORT}")
 PYTHON
     exit 0

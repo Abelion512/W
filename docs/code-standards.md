@@ -122,7 +122,7 @@ Rules:
   at non-obvious sites carry the contract for this MCP surface;
   Google-style mandatory docstrings apply to new *public* Python APIs.
 
-## Audit snapshot (2026-11-04, branch `hardening-e2e-ci-docs`)
+## Audit snapshot (2026-11-20, branch `chore/bridge-version`)
 
 | Area | Verdict | Evidence |
 | --- | --- | --- |
@@ -132,4 +132,4 @@ Rules:
 | Static checks | **Fixed this change** | pyflakes found 1 unused import (`test_bridge.py: asyncio`) — removed; pyflakes now clean and in CI |
 | Formatting enforcement | **Added this change** | `.editorconfig` + `pyproject.toml` (pytest config) added; previously none |
 | Dead code | Pass (after popup fix) | `serverLines`/`fmtUptime`/`fmtRss` were added but unused mid-task; wired into `render()` and covered by `test-popup-status.js` |
-| Tests | Pass | 23 pytest + 64 Node stub-DOM assertions + 22 live e2e checks, all in CI |
+| Tests | Pass | 157 pytest (16 audit regressions) + 9 Node stub-DOM suites + 8 desktop world-isolation checks + 26 live e2e checks, all in CI; full detail in `docs/audit-2026-11-20.md` |
