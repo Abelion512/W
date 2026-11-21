@@ -793,6 +793,35 @@ class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AuditRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_oversized_response_fails_only_oldest_pending(self):
+        """An oversized frame must not fail unrelated concurrent requests."""
+        server = bridge.MCPServer("mock", {"command": "x", "args": [], "env": {}})
+        reads = 0
+
+        async def readline():
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                raise ValueError("Separator is not found, and chunk exceed the limit")
+            return b""
+
+        async def read(_size):
+            return b"tail\n"
+
+        server.process = SimpleNamespace(
+            stdout=SimpleNamespace(readline=readline, read=read), returncode=0
+        )
+        loop = asyncio.get_running_loop()
+        first, second = loop.create_future(), loop.create_future()
+        server._pending[1] = first
+        server._pending[2] = second
+        await server._read_stdout()
+        self.assertTrue(first.done())
+        self.assertIn("too large", str(first.exception()))
+        self.assertFalse(second.done())
+        self.assertNotIn(1, server._pending)
+        self.assertIn(2, server._pending)
+
     async def test_stdout_reader_ignores_non_object_json(self):
         """A JSON array/string line must not kill the stdout reader task."""
         server = bridge.MCPServer("mock", {"command": "x", "args": [], "env": {}})
