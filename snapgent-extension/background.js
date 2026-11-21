@@ -758,27 +758,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         break;
       case "bridge_status":
         await refreshBridgeStatus(true);
-      // Liveness probe for the content script. Without this case a
-      // bg({type:"ping"}) falls through to `default:` and answers
-      // {ok:false, error:"unknown message"} - which any caller reads as "the
-      // bridge is down" even though it is perfectly healthy (measured: ping
-      // 1 ms, 28 tools listed). Keeping the case here makes the answer
-      // truthful: ok only when the bridge actually returned a pong.
-      case "ping":
-        send({ type: "ping" }, FAST_TIMEOUT).then((r) => {
-          sendResponse(r && r.ok
-            ? { ok: true }
-            : { ok: false, kind: (r && r.kind) || "no_pong", error: (r && r.error) || "bridge did not answer the ping" });
-        }).catch((e) => {
-          sendResponse({ ok: false, kind: "error", error: String(e) });
-        });
         break;
       // Liveness probe for the content script: a healthy bridge answers in
       // milliseconds. Without this case a ping fell through to "unknown
       // message", which callers read as a bridge outage.
       case "ping": {
-        const r = await send({ type: "ping" }, 6000);
-        sendResponse(r && r.type === "pong"
+        const r = await send({ type: "ping" }, FAST_TIMEOUT);
+        sendResponse(r && (r.type === "pong" || r.ok)
           ? { ok: true }
           : { ok: false, kind: (r && r.kind) || "no_pong", error: (r && r.error) || "bridge did not answer the ping" });
         break;
