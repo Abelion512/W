@@ -287,7 +287,7 @@ async function connect() {
     log("connected to bridge");
     startHeartbeat();
     broadcastStatus();
-    refreshBridgeStatus();
+    void refreshBridgeStatus(); // fire-and-forget status refresh
   };
 
   ws.onmessage = (ev) => {
@@ -373,7 +373,7 @@ function startHeartbeat() {
     }
     // Keeps the MV3 service worker alive AND detects a half-open socket.
     send({ type: "ping" }).catch(() => {});
-    refreshStudioStatus();
+    void refreshStudioStatus(); // fire-and-forget
   }, HEARTBEAT_MS);
 }
 
@@ -386,7 +386,7 @@ function stopHeartbeat() {
 function waitForConnection(timeout = 8000) {
   return new Promise((resolve) => {
     if (connected && ws && ws.readyState === WebSocket.OPEN) return resolve(true);
-    connect(); // nudge a (re)connection - important after a worker wake-up
+    void connect(); // nudge a (re)connection - important after a worker wake-up
     const t0 = Date.now();
     const iv = setInterval(() => {
       if (connected && ws && ws.readyState === WebSocket.OPEN) {
@@ -512,7 +512,7 @@ function handleBridgeMessage(msg) {
     return;
   }
   if (msg.type === "submit_prompt") {
-    handleSubmitPrompt(msg);
+    void handleSubmitPrompt(msg); // fire-and-forget; replies via prompt_result
     return;
   }
   if (msg.type === "cancel_prompt") {
@@ -702,13 +702,13 @@ function broadcastStatus() {
 
 // ── messages from content.js / popup.js ─────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  (async () => {
+  void (async () => {
     switch (msg.type) {
       case "status":
         // Self-heal after a worker wake-up, but never while parked on a refused
         // token: an open tab polls this every 5 s and would redial each time.
-        if (!connected && !authRequired) connect();
-        else refreshBridgeStatus(); // stale-guarded (5 s), fire-and-forget
+        if (!connected && !authRequired) void connect();
+        else void refreshBridgeStatus(); // stale-guarded (5 s), fire-and-forget
         if (bridgeToken === null) bridgeToken = await readBridgeToken();
         sendResponse(statusObj());
         break;
@@ -797,7 +797,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         authRequired = false; // the popup may have just saved a valid token
         chrome.storage.local.remove(AUTH_STATE_KEY);
         bridgeToken = null; // re-read: the popup may have just saved a token
-        connect();
+        void connect();
         sendResponse({ ok: true });
         break;
       default:
@@ -812,4 +812,4 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 
-connect();
+void connect();

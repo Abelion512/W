@@ -287,7 +287,7 @@ const until = async (cond, ms = 1000) => {
      JSON.stringify(plainRoute.providers) === JSON.stringify(["claude", "chatgpt", "kimi"]));
   ok("no flags: no capabilityFallback field", plainRoute && !("capabilityFallback" in plainRoute));
   ok("no flags: only tier/providers keys", plainRoute &&
-     Object.keys(plainRoute).sort().join(",") === "providers,tier");
+     Object.keys(plainRoute).sort((a, b) => String(a).localeCompare(String(b))).join(",") === "providers,tier");
 
   // A pin without flags is still an ordinary pinned route.
   const pinRoute = api.routeFor({ provider: "grok" });
