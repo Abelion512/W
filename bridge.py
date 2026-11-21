@@ -346,14 +346,20 @@ class MCPServer:
                 try:
                     line = await process.stdout.readline()
                 except ValueError:
-                    # Response line exceeded the stream limit. Discard the rest of it,
-                    # fail waiting requests with a clear error, and keep the server alive.
+                    # Response line exceeded the stream limit. Discard the rest of it.
+                    # StreamReader drops the partial buffer when it raises, so the
+                    # request id cannot be recovered. MCP stdio answers requests in
+                    # order: the oldest pending call is the one being answered. Fail
+                    # only that call, and pop it now so its late response cannot be
+                    # mistaken for a live request. Unrelated calls keep waiting.
                     log(f"[{self.server_id}] MCP response exceeded the buffer limit; discarding it.")
                     while True:
                         chunk = await process.stdout.read(1024 * 1024)
                         if not chunk or b"\n" in chunk:
                             break
-                    for future in list(self._pending.values()):
+                    if self._pending:
+                        request_id = next(iter(self._pending))
+                        future = self._pending.pop(request_id)
                         if not future.done():
                             future.set_exception(
                                 RuntimeError(
