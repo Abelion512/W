@@ -9,7 +9,7 @@ const ok = (name, cond) => {
   if (!cond) process.exitCode = 1;
 };
 
-const G = new Function(
+const G = new Function( // NOSONAR test only: own local guard.js read from disk, no external input
   fs.readFileSync(__dirname + "/core/guard.js", "utf8") + "; return ZSGuard;"
 )();
 

@@ -56,9 +56,9 @@ global.WebSocket = DeadSocket;
 // ZSGuard is injected here exactly as the worker gets it via importScripts, so
 // the heartbeat in the test runs the same rule the service worker runs.
 const guardSrc = fs.readFileSync(__dirname + "/core/guard.js", "utf8");
-const ZSGuard = (0, eval)(guardSrc + "\n; ZSGuard;");
+const ZSGuard = (0, eval)(guardSrc + "\n; ZSGuard;"); // NOSONAR test only: own local guard.js read from disk, no external input
 const src = fs.readFileSync(__dirname + "/background.js", "utf8");
-const internals = new Function(
+const internals = new Function( // NOSONAR test only: own local background.js read from disk, no external input
   "chrome",
   "WebSocket",
   "ZSGuard",

@@ -76,7 +76,7 @@ function runPreload(host, marker) {
     },
   };
   windowStub.top = windowStub;
-  vm.runInNewContext(preloadSource, sandbox, { filename: "preload.js" });
+  vm.runInNewContext(preloadSource, sandbox, { filename: "preload.js" }); // NOSONAR test only: own local preload source, stub DOM sandbox, no external input
   return { invocations, mainWorldScripts, insertedCss, windowStub };
 }
 

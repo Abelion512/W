@@ -111,7 +111,7 @@ if (provider && isTop && location.protocol === "https:") {
     // sees neither the shim nor ipcRenderer. webFrame.executeJavaScript would
     // run them in the page world and hand every tool to page JavaScript.
     try {
-      eval(sources.join("\n;\n"));
+      eval(sources.join("\n;\n")); // NOSONAR trusted bundled local files; one shared scope + lexical chrome required; webFrame would expose tools to the page
     } catch (e) {
       console.error("[snapgent] inject failed", e);
     }
