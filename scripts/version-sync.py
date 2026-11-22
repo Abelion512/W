@@ -52,7 +52,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.set:
-        version = checked_version(args.set)
+        version = ".".join(str(int(part)) for part in checked_version(args.set).split("."))
         (ROOT / "VERSION").write_text(version + "\n", encoding="utf-8")
         for name, (path, pattern) in FILES.items():
             if not path.exists():

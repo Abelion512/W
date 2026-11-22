@@ -480,7 +480,7 @@ function stopHeartbeat() {
 function waitForConnection(timeout = 8000) {
   return new Promise((resolve) => {
     if (connected && ws && ws.readyState === WebSocket.OPEN) return resolve(true);
-    connect(); // nudge a (re)connection - important after a worker wake-up
+    connect().catch(() => {}); // nudge a (re)connection - important after a worker wake-up
     const t0 = Date.now();
     const iv = setInterval(() => {
       if (connected && ws && ws.readyState === WebSocket.OPEN) {
@@ -809,7 +809,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "status":
         // Self-heal after a worker wake-up, but never while parked on a refused
         // token: an open tab polls this every 5 s and would redial each time.
-        if (!connected && !authRequired) connect();
+        if (!connected && !authRequired) connect().catch(() => {});
         else refreshBridgeStatus(); // stale-guarded (5 s), fire-and-forget
         if (bridgeToken === null) bridgeToken = await readBridgeToken();
         sendResponse(statusObj());
@@ -902,7 +902,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         authRequired = false; // the popup may have just saved a valid token
         chrome.storage.local.remove(AUTH_STATE_KEY);
         bridgeToken = null; // re-read: the popup may have just saved a token
-        connect();
+        connect().catch(() => {});
         sendResponse({ ok: true });
         break;
       default:
@@ -917,4 +917,4 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 
-connect();
+connect().catch(() => {});
