@@ -312,7 +312,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     result = run_loop(
-        a2a_submit,
+        lambda prompt, metadata: a2a_submit(prompt, metadata, timeout=args.timeout),
         goal=args.goal,
         files=args.file,
         checks=args.check,

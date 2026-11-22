@@ -21,6 +21,8 @@ const ok = (name, cond) => {
 
 // ── Minimal chrome + WebSocket stubs ───────────────────────────────────────
 const listeners = [];
+const createdAlarms = [];
+const alarmListeners = [];
 const noEvent = { addListener: () => {} };
 global.chrome = {
   runtime: {
@@ -31,7 +33,11 @@ global.chrome = {
   },
   tabs: { query: (_f, cb) => cb && cb([]), sendMessage: () => Promise.resolve() },
   storage: { local: { get: (_k, cb) => cb && cb({}), set: () => {} } },
-  alarms: { create: () => {}, onAlarm: noEvent, clear: () => {} },
+  alarms: {
+    create: (name, info) => createdAlarms.push({ name, info }),
+    onAlarm: { addListener: (fn) => alarmListeners.push(fn) },
+    clear: () => {},
+  },
 };
 
 // A WebSocket that never opens and never delivers: lets us exercise the
@@ -151,6 +157,49 @@ const { send, failAllPending, pending, routeFor, markProviderLimited, isProvider
     ok("ping is a known message type", !(reply && reply.error === "unknown message"));
     ok("ping answers a structured failure when the bridge is down",
       reply && (reply.ok === true || typeof reply.kind === "string"));
+  }
+
+  // ── 5. MV3 keepalive alarm (zs-keepalive, 30s) ───────────────────────────
+  {
+    const ka = createdAlarms.find((a) => a.name === "zs-keepalive");
+    ok("zs-keepalive alarm is registered on startup", !!ka);
+    ok("zs-keepalive alarm fires every 30 seconds (0.5 min)",
+      ka && ka.info && ka.info.periodInMinutes === 0.5);
+    ok("chrome.alarms.onAlarm listener is registered", alarmListeners.length > 0);
+    const sent = [];
+    const live = { readyState: 1, send: (s) => sent.push(JSON.parse(s)), close: () => {} };
+    internals.setConnected(true);
+    internals.setWs(live);
+    alarmListeners[0]({ name: "unrelated" });
+    ok("unrelated alarm does not send a keepalive ping", sent.length === 0);
+    alarmListeners[0]({ name: "zs-keepalive" });
+    ok("zs-keepalive alarm sends a ping frame when connected",
+      sent.length === 1 && sent[0].type === "ping" && typeof sent[0].id === "string" && sent[0].id.startsWith("ka-"));
+  }
+
+  // ── 6. a2a_chunk forwarding to bridge ────────────────────────────────────
+  {
+    const handler = listeners[0];
+    const sent = [];
+    const live = { readyState: 1, send: (s) => sent.push(JSON.parse(s)), close: () => {} };
+    internals.setConnected(true);
+    internals.setWs(live);
+    const reply = await new Promise((resolve) => {
+      handler({ type: "a2a_chunk", promptId: "p-chunk-1", text: "hello delta" }, {}, resolve);
+    });
+    ok("a2a_chunk replies ok:true", reply && reply.ok === true);
+    ok("a2a_chunk forwards a prompt_chunk frame to the bridge",
+      sent.length === 1 &&
+      sent[0].type === "prompt_chunk" &&
+      sent[0].prompt_id === "p-chunk-1" &&
+      sent[0].text === "hello delta");
+
+    sent.length = 0;
+    const emptyReply = await new Promise((resolve) => {
+      handler({ type: "a2a_chunk", promptId: "p-chunk-1", text: "" }, {}, resolve);
+    });
+    ok("empty a2a_chunk still replies ok:true", emptyReply && emptyReply.ok === true);
+    ok("empty a2a_chunk does not emit a bridge frame", sent.length === 0);
   }
 })().catch((e) => {
   console.error(e);

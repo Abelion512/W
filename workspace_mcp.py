@@ -231,41 +231,85 @@ def _bwrap_supports_unshare_net() -> bool:
     return _UNSHARE_NET_SUPPORTED
 
 
+def _fail_or_unsandboxed(command: List[str], warn: str, fatal: str) -> List[str]:
+    if _allow_unsandboxed():
+        sys.stderr.write(f"workspace_mcp: {warn}; running command unsandboxed\n")
+        return list(command)
+    raise RuntimeError(f"SECURITY FATAL: {fatal} Set ZS_ALLOW_UNSANDBOXED=1 to override.")
+
+
+def _worktree_git_dir(root: Path) -> Optional[Path]:
+    """Return the resolved common .git directory when root is a Git worktree."""
+    dot_git = root / ".git"
+    if dot_git.is_symlink():
+        raise ValueError(
+            f"Refusing symlinked .git in workspace root: {dot_git}"
+        )
+    if not dot_git.is_file():
+        return None
+    try:
+        first_line = dot_git.read_text(encoding="utf-8", errors="strict").splitlines()[0].strip()
+    except (OSError, IndexError, UnicodeDecodeError):
+        return None
+    if not first_line.startswith("gitdir:"):
+        return None
+    raw_target = first_line[len("gitdir:"):].strip()
+    if not raw_target:
+        return None
+    gitdir = Path(raw_target)
+    if not gitdir.is_absolute():
+        gitdir = (root / gitdir).resolve()
+    else:
+        gitdir = gitdir.resolve()
+    if not gitdir.is_dir() or not (gitdir / "HEAD").is_file():
+        return None
+    common_file = gitdir / "commondir"
+    if common_file.is_file():
+        try:
+            common_rel = common_file.read_text(encoding="utf-8", errors="strict").strip()
+            relative = Path(common_rel)
+            if relative.is_absolute() or "\x00" in common_rel:
+                return None
+            if any(part not in ("..", ".") for part in relative.parts):
+                return None
+            common = (gitdir / relative).resolve()  # NOSONAR relative path restricted to '..' and checked against the parent git dir
+            if common != gitdir.parent.parent:
+                return None
+            if common.is_dir() and (common / "HEAD").is_file() and common.name == ".git":
+                return common
+        except (OSError, UnicodeDecodeError):
+            return None
+    return gitdir if gitdir.name == ".git" else None
+
+
 def _sandboxed_argv(command: List[str], root: Path) -> List[str]:
     """Wrap a command in bubblewrap (OpenAI/Anthropic-style OS sandbox).
 
     Filesystem: the host root is mounted read-only and only the workspace
-    root (plus an ephemeral /tmp) is writable; /home and /root are masked
-    with tmpfs so user secrets outside the workspace are not readable.
+    root (plus an ephemeral /tmp and, for Git worktrees, the parent .git dir)
+    is writable; /home and /root are masked with tmpfs so user secrets
+    outside the workspace are not readable.
     Network: disabled by default (ZS_SANDBOX_NETWORK=1 to allow).
     Namespace: user, IPC, PID, UTS and cgroup namespaces are unshared, all
     capabilities are dropped, and the session is detached from the parent.
     Fail closed: a missing or unusable bubblewrap raises RuntimeError. Set
     ZS_ALLOW_UNSANDBOXED=1 to fall back to an unsandboxed command instead.
     """
+    root = Path(root)  # callers at the CLI/test boundary pass a str
     if os.name == "nt":
         return list(command)
     bwrap = shutil.which("bwrap")
     if not bwrap:
-        if _allow_unsandboxed():
-            sys.stderr.write(
-                "workspace_mcp: bubblewrap not found; running command unsandboxed\n"
-            )
-            return list(command)
-        raise RuntimeError(
-            "SECURITY FATAL: bubblewrap (bwrap) not found; unsandboxed execution is "
-            "disabled. Set ZS_ALLOW_UNSANDBOXED=1 to override."
+        return _fail_or_unsandboxed(
+            command,
+            "bubblewrap not found",
+            "bubblewrap (bwrap) not found; unsandboxed execution is disabled.",
         )
     if not _bwrap_usable():
-        if _allow_unsandboxed():
-            sys.stderr.write(
-                "workspace_mcp: bubblewrap unusable in this environment; "
-                "running command unsandboxed\n"
-            )
-            return list(command)
-        raise RuntimeError(
-            "SECURITY FATAL: bubblewrap is unusable in this environment (user namespaces "
-            "disabled or restricted). Set ZS_ALLOW_UNSANDBOXED=1 to override."
+        return _fail_or_unsandboxed(
+            command,
+            "bubblewrap unusable in this environment",
+            "bubblewrap is unusable in this environment (user namespaces disabled or restricted).",
         )
     # A writable (regular-file) /dev/null: bwrap's --dev mount is nodev, so
     # device nodes cannot be opened O_RDWR, which breaks git and others.
@@ -274,15 +318,10 @@ def _sandboxed_argv(command: List[str], root: Path) -> List[str]:
     # host file.
     devnull_path = _secure_devnull()
     if not devnull_path:
-        if _allow_unsandboxed():
-            sys.stderr.write(
-                "workspace_mcp: no secure /dev/null stand-in; "
-                "running command unsandboxed\n"
-            )
-            return list(command)
-        raise RuntimeError(
-            "SECURITY FATAL: could not create the sandbox /dev/null stand-in. "
-            "Set ZS_ALLOW_UNSANDBOXED=1 to override."
+        return _fail_or_unsandboxed(
+            command,
+            "no secure /dev/null stand-in",
+            "could not create the sandbox /dev/null stand-in.",
         )
     # Explicit namespaces instead of --unshare-all: the network namespace is
     # the one operators may need to opt back in (ZS_SANDBOX_NETWORK=1), so it
@@ -333,6 +372,11 @@ def _sandboxed_argv(command: List[str], root: Path) -> List[str]:
         "--tmpfs", "/root",
         "--tmpfs", "/mnt",
         "--tmpfs", "/media",
+    ]
+    worktree_git = _worktree_git_dir(root)
+    if worktree_git is not None:
+        argv += ["--bind", str(worktree_git), str(worktree_git)]
+    argv += [
         "--chdir", "/tmp/workspace",
         # Only an explicit allowlist reaches the command: the server process
         # carries bridge/API secrets in its environment that must not leak
@@ -356,6 +400,7 @@ def _run_process(command: List[str], root: Path, timeout: int = 30) -> str:
     stdout/stderr are drained in capped chunks instead of being buffered whole,
     so a runaway command cannot exhaust memory before the cap is applied.
     """
+    root = Path(root)  # callers at the CLI/test boundary pass a str
     sandboxed = _sandboxed_argv(list(command), root)
     process = subprocess.Popen(
         sandboxed,

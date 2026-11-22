@@ -594,6 +594,34 @@ class FakeClient:
         self.sent.append(json.loads(payload))
 
 
+class FakeSessionSocket(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self.request_headers = {
+            "Origin": "chrome-extension://test-ext",
+            "Host": "127.0.0.1:17613",
+        }
+        self._incoming = asyncio.Queue()
+
+    async def push(self, payload):
+        await self._incoming.put(json.dumps(payload))
+
+    async def disconnect(self):
+        await self._incoming.put(None)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        item = await self._incoming.get()
+        if item is None:
+            raise StopAsyncIteration
+        return item
+
+    async def close(self, code=1000, reason=""):
+        await self.disconnect()
+
+
 class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
     async def _await_send(self, client):
         for _ in range(200):
@@ -877,6 +905,204 @@ class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict("os.environ", {"ZS_A2A_TOKEN": "tok", "ZS_A2A_PORT": "0"}):
             server = bridge.build_a2a_server(bridge.Bridge(), asyncio.new_event_loop())
         self.assertEqual(server.token, "tok")
+
+    def test_build_a2a_server_configures_disconnect_grace_from_env(self):
+        loop = asyncio.new_event_loop()
+        try:
+            with patch.dict("os.environ", {"ZS_A2A_TOKEN": "tok", "ZS_A2A_PORT": "0"}, clear=False):
+                os.environ.pop("ZS_DISCONNECT_GRACE_SECONDS", None)
+                default_bridge = bridge.Bridge()
+                bridge.build_a2a_server(default_bridge, loop)
+                self.assertEqual(default_bridge._disconnect_grace, 15.0)
+
+            with patch.dict(
+                "os.environ",
+                {"ZS_A2A_TOKEN": "tok", "ZS_A2A_PORT": "0", "ZS_DISCONNECT_GRACE_SECONDS": "25"},
+            ):
+                custom_bridge = bridge.Bridge()
+                bridge.build_a2a_server(custom_bridge, loop)
+                self.assertEqual(custom_bridge._disconnect_grace, 25.0)
+
+            with patch.dict(
+                "os.environ",
+                {"ZS_A2A_TOKEN": "tok", "ZS_A2A_PORT": "0", "ZS_DISCONNECT_GRACE_SECONDS": "bad"},
+            ):
+                fallback_bridge = bridge.Bridge()
+                bridge.build_a2a_server(fallback_bridge, loop)
+                self.assertEqual(fallback_bridge._disconnect_grace, 15.0)
+        finally:
+            loop.close()
+
+    async def test_disconnect_grace_fails_after_window_expires(self):
+        manager = bridge.Bridge(disconnect_grace=0.08)
+        ws = FakeSessionSocket()
+        handler_task = asyncio.create_task(manager.handle_client(ws))
+        for _ in range(100):
+            if ws in manager.clients:
+                break
+            await asyncio.sleep(0.01)
+        prompt_task = asyncio.create_task(manager.submit_prompt("hello", 5))
+        for _ in range(100):
+            if any(m.get("type") == "submit_prompt" for m in ws.sent):
+                break
+            await asyncio.sleep(0.01)
+        await ws.disconnect()
+        await asyncio.wait_for(handler_task, 2)
+        # Immediately after disconnect, the prompt must still be held open.
+        await asyncio.sleep(0.02)
+        self.assertFalse(prompt_task.done())
+        result = await asyncio.wait_for(prompt_task, 2)
+        self.assertFalse(result["ok"])
+        self.assertIn("disconnected", result["error"])
+
+    async def test_reconnect_adopts_orphaned_prompt_and_resolves(self):
+        manager = bridge.Bridge(disconnect_grace=1.0)
+        ws1 = FakeSessionSocket()
+        h1 = asyncio.create_task(manager.handle_client(ws1))
+        for _ in range(100):
+            if ws1 in manager.clients:
+                break
+            await asyncio.sleep(0.01)
+        prompt_task = asyncio.create_task(manager.submit_prompt("keep going", 5))
+        for _ in range(100):
+            if any(m.get("type") == "submit_prompt" for m in ws1.sent):
+                break
+            await asyncio.sleep(0.01)
+        prompt_id = [m for m in ws1.sent if m.get("type") == "submit_prompt"][0]["id"]
+
+        await ws1.disconnect()
+        await asyncio.wait_for(h1, 2)
+        self.assertFalse(prompt_task.done())
+        self.assertIn(ws1, manager._disconnect_timers)
+
+        ws2 = FakeSessionSocket()
+        h2 = asyncio.create_task(manager.handle_client(ws2))
+        for _ in range(100):
+            if ws2 in manager.clients:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(manager._prompt_owners.get(prompt_id), ws2)
+        self.assertEqual(manager._disconnect_timers, {})
+
+        await ws2.push(
+            {
+                "id": 42,
+                "type": "prompt_result",
+                "prompt_id": prompt_id,
+                "ok": True,
+                "text": "recovered after sw restart",
+            }
+        )
+        result = await asyncio.wait_for(prompt_task, 2)
+        self.assertEqual(result, {"ok": True, "text": "recovered after sw restart"})
+        await ws2.disconnect()
+        await asyncio.wait_for(h2, 2)
+
+    async def test_prompt_chunk_forwards_to_a2a_server_emit_chunk(self):
+        manager = bridge.Bridge()
+        emitted = []
+        manager._a2a_server = SimpleNamespace(
+            emit_chunk=lambda tid, txt: emitted.append((tid, txt))
+        )
+        owner = FakeClient()
+        rogue = FakeClient()
+        manager.clients.update({owner, rogue})
+        manager._last_client = owner
+        task = asyncio.create_task(
+            manager.submit_prompt("stream me", 5, task_id="task-stream-1")
+        )
+        await self._await_send(owner)
+        prompt_id = owner.sent[0]["id"]
+        # Foreign socket chunks must be ignored.
+        await manager._handle_request(
+            rogue,
+            {"type": "prompt_chunk", "prompt_id": prompt_id, "text": "spoof"},
+        )
+        await manager._handle_request(
+            owner,
+            {"type": "prompt_chunk", "prompt_id": prompt_id, "text": "chunk-1"},
+        )
+        await manager._handle_request(
+            owner,
+            {"type": "prompt_chunk", "prompt_id": prompt_id, "text": "chunk-2"},
+        )
+        self.assertEqual(
+            emitted,
+            [("task-stream-1", "chunk-1"), ("task-stream-1", "chunk-2")],
+        )
+        await manager._handle_request(
+            owner,
+            {
+                "id": 99,
+                "type": "prompt_result",
+                "prompt_id": prompt_id,
+                "ok": True,
+                "text": "chunk-1chunk-2",
+            },
+        )
+        self.assertEqual(
+            await asyncio.wait_for(task, 2),
+            {"ok": True, "text": "chunk-1chunk-2"},
+        )
+
+    async def test_cancel_task_sends_cancel_prompt_frame_to_extension(self):
+        import urllib.request
+
+        loop = asyncio.get_running_loop()
+        manager = bridge.Bridge()
+        client = FakeClient()
+        manager.clients.add(client)
+        with patch.dict("os.environ", {"ZS_A2A_TOKEN": "tok", "ZS_A2A_PORT": "0"}):
+            server = bridge.build_a2a_server(manager, loop)
+        server.start()
+        try:
+            def _rpc(method, params):
+                body = json.dumps(
+                    {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+                ).encode("utf-8")
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{server.port}/",
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer tok",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+
+            sent_meta = {"provider": "gemini"}
+            created = await asyncio.to_thread(
+                _rpc,
+                "SendMessage",
+                {
+                    "message": {
+                        "messageId": "m-cancel",
+                        "role": "ROLE_USER",
+                        "parts": [{"text": "long task"}],
+                    },
+                    "metadata": sent_meta,
+                    "configuration": {"returnImmediately": True},
+                },
+            )
+            task_id = created["result"]["id"]
+            await self._await_send(client)
+            prompt_frame = client.sent[0]
+            self.assertEqual(prompt_frame["type"], "submit_prompt")
+            self.assertEqual(prompt_frame["metadata"], {"provider": "gemini"})
+
+            canceled = await asyncio.to_thread(_rpc, "tasks/cancel", {"id": task_id})
+            self.assertEqual(canceled["result"]["status"]["state"], "TASK_STATE_CANCELED")
+            for _ in range(100):
+                if any(m.get("type") == "cancel_prompt" for m in client.sent):
+                    break
+                await asyncio.sleep(0.01)
+            cancel_frames = [m for m in client.sent if m.get("type") == "cancel_prompt"]
+            self.assertEqual(len(cancel_frames), 1)
+            self.assertEqual(cancel_frames[0]["id"], prompt_frame["id"])
+        finally:
+            server.stop()
 
 
 class AuditRegressionTests(unittest.IsolatedAsyncioTestCase):

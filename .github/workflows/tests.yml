@@ -79,6 +79,8 @@ jobs:
           node snapgent-extension/test-grok-editor.js
           node snapgent-extension/test-a2a.js
           node snapgent-extension/test-background.js
+          node snapgent-extension/test-core-modules.js
+          node snapgent-extension/test-gemini.js
           node snapgent-extension/test-guard.js
 
   e2e:

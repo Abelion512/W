@@ -27,7 +27,8 @@
 // eslint-disable-next-line no-unused-vars
 const ZSProvider = (() => {
   "use strict";
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const B = ZSProviderBase;
+  const sleep = B.sleep;
   let diag = () => {}; // injected by core via init()
 
   const S = {
@@ -180,24 +181,21 @@ const ZSProvider = (() => {
   const isFreshChat = () =>
     chatIsEmpty() && /^\/?$/.test(location.pathname) && !!getEditor();
 
-  // The composer box the Start gate hides as one unit.
-  const composerFrame = () =>
-    document.querySelector(S.composer) ||
-    (getEditor() ? getEditor().closest("form, .relative") : null);
-
   // Integrated status bar (same approach as Kimi): GLM is a Svelte app that
   // reconciles the composer subtree, so we must NOT insert our #zs-bar into it
   // (a foreign node in a framework-managed parent risks the diff nesting the
-  // composer inside the bar). barAnchor() returns the rounded composer CARD - the
-  // `flex flex-col … rounded-xl` ancestor of the textarea, which holds the input
-  // box then the toolbar row - and the core (placeBar anchored branch) keeps the
-  // bar in #zs-root, positions it to hug that card's top edge at full width, and
-  // reserves the strip with padding-top. Validated live: full width, hugs top,
-  // pushes the input down with no overlap.
+  // composer inside the bar). barAnchor() returns the rounded composer CARD -
+  // shared with composerFrame() so glow, Start gate, and padding-top target
+  // the exact same element.
   function barAnchor() {
     const ed = getEditor();
-    return (ed && ed.closest('.flex-col[class*="rounded"]')) || null;
+    return (
+      (ed && ed.closest('.flex-col[class*="rounded"]')) ||
+      document.querySelector(S.composer) ||
+      (ed ? ed.closest("form, .relative") : null)
+    );
   }
+  const composerFrame = () => barAnchor();
 
   // ── Input lock ────────────────────────────────────────────────────────────
   // The textarea is a real <textarea>: `readonly` blocks the user but is ignored
@@ -247,42 +245,19 @@ const ZSProvider = (() => {
     const think = item.querySelector(S.thinking);
     return (think ? think.textContent || "" : "") + "\n" + textWithout(item);
   }
-  const streamLen = (item) => streamText(item === undefined ? lastAssistant() : item).length;
-
-  let _streamMax = -1, _streamAt = 0, _streamItem = null;
-  function sampleStream() {
-    const item = lastAssistant();
-    const len = streamText(item).length;
-    const now = Date.now();
-    if (item !== _streamItem || len < _streamMax - 400) {
-      _streamItem = item; _streamMax = len; _streamAt = now; return;
-    }
-    if (len > _streamMax) { _streamMax = len; _streamAt = now; }
-  }
-  const grewWithin = (ms) => _streamMax > 1 && Date.now() - _streamAt < ms;
+  const _stream = B.createStreamTracker(streamText, lastAssistant, { minGrow: 1 });
+  const streamLen = _stream.streamLen;
 
   // GLM's stop button is present for the ENTIRE generation and reliably clears
-  // when it ends (validated live), so we TRUST it directly. We must NOT gate it
-  // on stream growth the way Gemini's wedge guard does: GLM renders the answer
-  // in a CodeMirror editor that VIRTUALIZES its lines, so a long script's
-  // measured text length PLATEAUS mid-stream. The growth guard then wrongly
-  // declared the still-active generation "done", the watcher finalized a
-  // half-written command, and the feedback we sent aborted GLM mid-reply - the
-  // parse_error / truncation loop. Trusting the button avoids that entirely;
-  // the growth check only covers the brief tail right after the button clears.
+  // when it ends (validated live), so we TRUST it directly.
   function genActive() {
-    sampleStream();
+    _stream.sampleStream();
     if (stopButton()) return true;
-    return grewWithin(timings.GEN_IDLE_MS);
+    return _stream.grewWithin(timings.GEN_IDLE_MS);
   }
   const isGenerating = genActive;
   const isBusyNow = genActive;
   const isHardGenerating = () => !!stopButton();
-
-  // GLM exposes no reliable per-turn "stopped" marker → never halted.
-  const turnHalted = () => false;
-  const findContinueBtn = () => null;
-  const clickContinueBtn = () => false;
 
   function snapshot() {
     try {
@@ -552,7 +527,7 @@ const ZSProvider = (() => {
     return hidAny;
   }
 
-  return {
+  return B.createProvider({
     id: "glm",
     displayName: "GLM",
     // GLM-5.2 is multimodal and z.ai's composer accepts image uploads (png/jpg via
@@ -601,12 +576,11 @@ const ZSProvider = (() => {
     // composer / state
     getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barAnchor,
     setInputLock, typeAndSend, stopGeneration,
-    isGenerating, isBusyNow, isHardGenerating,
+    isGenerating, isHardGenerating,
     enforceComposer, ensureComposerReady,
-    turnHalted, findContinueBtn, clickContinueBtn,
     scanError, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,
-  };
+  });
 })();

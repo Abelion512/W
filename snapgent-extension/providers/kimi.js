@@ -27,7 +27,8 @@
 // eslint-disable-next-line no-unused-vars
 const ZSProvider = (() => {
   "use strict";
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const B = ZSProviderBase;
+  const sleep = B.sleep;
   let diag = () => {}; // injected by core via init()
 
   const S = {
@@ -295,13 +296,10 @@ const ZSProvider = (() => {
       // flash of the site's default text). A slow interval backstops the observer.
       const cont = lockContainer();
       if (cont && !_phObs) {
-        _phObs = new MutationObserver(applyLockedPlaceholder);
-        try { _phObs.observe(cont, { childList: true, subtree: true }); } catch {}
+        _phObs = B.watchDom(applyLockedPlaceholder, { target: cont, childList: true, subtree: true, characterData: true });
       }
-      if (!_phTimer) _phTimer = setInterval(applyLockedPlaceholder, 400);
     } else {
       if (_phObs) { try { _phObs.disconnect(); } catch {} _phObs = null; }
-      if (_phTimer) { clearInterval(_phTimer); _phTimer = null; }
       if (ed) { ed.setAttribute("contenteditable", "true"); ed.removeAttribute("data-zs-locked"); }
       // Restore the site's own placeholder text on whatever node is current now.
       const ph = placeholderEl();
@@ -332,37 +330,19 @@ const ZSProvider = (() => {
     const md = bodyEl(item);
     return md ? textWithout(md, ".zs-chip") : "";
   }
-  const streamLen = (item) =>
-    streamText(item === undefined ? lastAssistant() : item).length;
-
-  let _streamMax = -1, _streamAt = 0, _streamItem = null;
-  function sampleStream() {
-    const item = lastAssistant();
-    const len = streamText(item).length;
-    const now = Date.now();
-    if (item !== _streamItem || len < _streamMax - 400) {
-      _streamItem = item; _streamMax = len; _streamAt = now; return;
-    }
-    if (len > _streamMax) { _streamMax = len; _streamAt = now; }
-  }
-  const grewWithin = (ms) => _streamMax > 1 && Date.now() - _streamAt < ms;
+  const _stream = B.createStreamTracker(streamText, lastAssistant, { minGrow: 1 });
+  const streamLen = _stream.streamLen;
 
   // The stop class is present for the ENTIRE generation and clears when it ends
   // (validated live), so we trust it; the growth check only covers the brief
   // tail right after it clears.
   function genActive() {
-    sampleStream();
+    _stream.sampleStream();
     if (stopButton()) return true;
-    return grewWithin(timings.GEN_IDLE_MS);
+    return _stream.grewWithin(timings.GEN_IDLE_MS);
   }
   const isGenerating = genActive;
-  const isBusyNow = genActive;
   const isHardGenerating = () => !!stopButton();
-
-  // No reliable per-turn "stopped" marker, no truncation "Continue" button.
-  const turnHalted = () => false;
-  const findContinueBtn = () => null;
-  const clickContinueBtn = () => false;
 
   function snapshot() {
     try {
@@ -758,7 +738,7 @@ const ZSProvider = (() => {
     return hidAny;
   }
 
-  return {
+  return B.createProvider({
     id: "kimi",
     displayName: "Kimi",
     // Confirmed live: Kimi (K2.6) reads attached images - it correctly described
@@ -803,12 +783,11 @@ const ZSProvider = (() => {
     // composer / state
     getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, gateTarget, barAnchor,
     setInputLock, typeAndSend, stopGeneration,
-    isGenerating, isBusyNow, isHardGenerating,
+    isGenerating, isHardGenerating,
     enforceComposer, ensureComposerReady, modeWarning, overlayBlocking,
-    turnHalted, findContinueBtn, clickContinueBtn,
     scanError, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,
-  };
+  });
 })();

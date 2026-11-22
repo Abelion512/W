@@ -3,7 +3,11 @@
 // eslint-disable-next-line no-unused-vars
 const ZSProvider = (() => {
   "use strict";
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const B = ZSProviderBase;
+  const sleep = B.sleep;
+  const visible = B.visible;
+  const waitFor = B.waitFor;
+  const idTracker = B.createWeakIdTracker("ptero-");
   let diag = () => {};
   let lockedEditor = null;
 
@@ -26,7 +30,7 @@ const ZSProvider = (() => {
     STABLE_MS: 10000,
     RESPONSE_TIMEOUT_MS: 300000,
   };
-  const visible = (el) => !!el && el.isConnected && el.getClientRects().length > 0;
+  // visible inherited from ZSProviderBase.
   const allItems = () => {
     const list = document.querySelector(S.list);
     return list ? [...list.querySelectorAll(`${S.user},${S.assistant}`)] : [];
@@ -79,34 +83,15 @@ const ZSProvider = (() => {
     return area && visible(area) ? area : null;
   };
 
-  const ids = new WeakMap();
-  let nextId = 0;
   function lastAssistantId() {
     const item = lastAssistant();
     if (!item) return null;
     const id = item.dataset.msgId || item.dataset.messageId;
-    if (id) return id;
-    if (!ids.has(item)) ids.set(item, ++nextId);
-    return ids.get(item);
+    return id || idTracker.idOf(item);
   }
   const streamText = (item) => textWithout(bodyOf(item));
-  const streamLen = (item) => streamText(item === undefined ? lastAssistant() : item).length;
-  let sampledItem = null;
-  let sampledLen = 0;
-  let grewAt = 0;
-  function sampleStream() {
-    const item = lastAssistant();
-    const length = streamLen(item);
-    const now = Date.now();
-    if (item !== sampledItem || length < sampledLen - 400) {
-      sampledItem = item;
-      sampledLen = length;
-      grewAt = now;
-    } else if (length > sampledLen) {
-      sampledLen = length;
-      grewAt = now;
-    }
-  }
+  const stream = B.createStreamTracker(streamText, lastAssistant, { minGrow: 0 });
+  const streamLen = stream.streamLen;
   const stopButton = () => {
     const button = document.querySelector(S.send);
     return button && button.classList.contains("is-stop") && visible(button) ? button : null;
@@ -117,10 +102,9 @@ const ZSProvider = (() => {
   };
   const isHardGenerating = () => !!stopButton();
   const isGenerating = () => {
-    sampleStream();
-    return isHardGenerating() || (sampledLen > 0 && Date.now() - grewAt < timings.GEN_IDLE_MS);
+    stream.sampleStream();
+    return isHardGenerating() || stream.grewWithin(timings.GEN_IDLE_MS);
   };
-  const isBusyNow = isGenerating;
 
   function snapshot() {
     const item = lastAssistant();
@@ -137,14 +121,7 @@ const ZSProvider = (() => {
       item,
     };
   }
-  async function waitFor(predicate, timeout) {
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
-      if (predicate()) return true;
-      await sleep(120);
-    }
-    return false;
-  }
+  // waitFor inherited from ZSProviderBase.
 
   function setInputLock(on) {
     const editor = on ? getEditor() : (lockedEditor || getEditor());
@@ -217,11 +194,7 @@ const ZSProvider = (() => {
     }
     return getEditor() ? null : "The Ptero input box is not available.";
   }
-  const isTooLongMsg = (text) => /conversation.{0,30}(too long|limit)|context.{0,20}limit/i.test(text);
-  const isBusyMsg = (text) => /try again later|temporarily unavailable|rate limit|too many requests/i.test(text);
-  const turnHalted = () => false;
-  const findContinueBtn = () => null;
-  const clickContinueBtn = () => false;
+  // isTooLongMsg, isBusyMsg, turnHalted, findContinueBtn, clickContinueBtn inherited from ZSProviderBase.
   const conversationKey = () => {
     const items = allItems();
     const first = items[0];
@@ -230,8 +203,7 @@ const ZSProvider = (() => {
     const id = (firstAssistant && (firstAssistant.dataset.msgId || firstAssistant.dataset.messageId)) ||
       first.dataset.msgId || first.dataset.messageId;
     if (id) return `ptero:${id}`;
-    if (!ids.has(first)) ids.set(first, ++nextId);
-    return `ptero:${ids.get(first)}`;
+    return `ptero:${idTracker.idOf(first)}`;
   };
 
   function installSendHooks(handlers) {
@@ -280,7 +252,7 @@ const ZSProvider = (() => {
     return found;
   }
 
-  return {
+  return B.createProvider({
     id: "ptero",
     displayName: "Ptero",
     sendRetryLimit: 1,
@@ -294,12 +266,11 @@ const ZSProvider = (() => {
     streamLen, snapshot,
     getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barAnchor,
     setInputLock, typeAndSend, stopGeneration,
-    isGenerating, isBusyNow, isHardGenerating,
+    isGenerating, isHardGenerating,
     enforceComposer, ensureComposerReady,
-    turnHalted, findContinueBtn, clickContinueBtn,
-    scanError, isTooLongMsg, isBusyMsg,
+    scanError,
     attachImages: () => false,
     clearAttachments: () => {},
     conversationKey, installSendHooks, findToolBlockSpot,
-  };
+  });
 })();

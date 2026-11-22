@@ -76,44 +76,6 @@ To delegate a prompt to the same chat from a local A2A client, see `docs/a2a.md`
 
 ---
 
-## Snapgent App (standalone, Windows)
-
-Prefer not to load an extension or run the bridge yourself? **Snapgent App** is a standalone desktop app (Electron) with a built-in AI browser, a toolbar, and the bridge built in. It needs no Chrome/Edge, no `start.bat`, no Python and no Node.js.
-
-**Download** (`app-v0.1.1`): [Releases > app-v0.1.1](https://github.com/herdodp/snapgent-connector/releases/tag/app-v0.1.1)
-
-| File | Use |
-|---|---|
-| `Snapgent.Setup.0.1.1.exe` | Installer (recommended) |
-| `Snapgent.Setup.0.1.1.exe.blockmap` | Update metadata, not needed for a normal install |
-
-**How to use**
-
-1. Install and open Snapgent. It opens `claude.ai` inside the app and keeps your login in its own profile.
-2. Click the workspace button in the toolbar and choose your project folder.
-3. Chat as usual. The agent bar appears on the page and runs the commands in the selected folder.
-
-**Known limitations (0.1.1)**
-
-- The exe is **not code-signed**, so Windows SmartScreen may warn. Click **More info**, then **Run anyway**.
-- **Google sign-in has not been fully tested.** If it fails, log in with email and password on the Claude page.
-- Windows only. The default Electron icon is still used.
-
-**Build from source**
-
-The source is in [`snapgent-app/`](snapgent-app). It carries its own copy of the extension code (`snapgent-app/extension`), separate from `snapgent-extension/`.
-
-```
-cd snapgent-app
-npm install
-npm start        # run in development
-npm run dist     # build the Windows installer into dist/
-```
-
-`snapgent-app/bin/vscode_mcp.exe` is not stored in Git. Build it from `snapgent-app/mcp/vscode_mcp.py` with PyInstaller (see `vscode_mcp.spec`) and place it in `snapgent-app/bin/` before running `npm run dist`.
-
----
-
 ## `02` &nbsp; Supported AI providers
 
 | Provider | URL | Status | Notes |
@@ -265,7 +227,12 @@ The extension is split into a **provider-agnostic core** and **per-site provider
 ```
 core/config.js              system prompt, feedback, tool categories
 core/parser.js              snapgentV3 command parsing
-core/main.js                agent loop, UI, session state
+core/guard.js               retry, heartbeat, and scroll policy
+core/channel.js             runtime messaging, stale-extension detection, status polling
+core/dom-engine.js          DOM waiting, hidden-tab parking, submission, response stream
+core/a2a-runner.js          A2A prompt lifecycle, cancellation, chunk emission
+core/ui-controller.js       overlay bar, menus, settings popups, theme, banners
+core/main.js                agent loop, tool execution, camouflage, session state
 providers/<site>.js         site-specific selectors and chat integration
 background.js               WebSocket connection to the local bridge
 manifest.json               browser permissions and content scripts
@@ -289,7 +256,6 @@ snapgent-full/
 ├── assets/                    # Project images
 ├── docs/                      # Design, security/ops, and code standards
 ├── scripts/                   # One-off tooling
-├── snapgent-app/              # Standalone Electron desktop app
 ├── a2a_server.py              # A2A HTTP facade over bridge.submit_prompt
 ├── harness_loop.py            # Harness-owned A2A retry loop
 ├── context_sandbox.py         # Per-task context file sandbox
