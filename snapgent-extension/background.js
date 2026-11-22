@@ -944,4 +944,4 @@ if (typeof chrome !== "undefined" && chrome.alarms) {
   } catch {}
 }
 
-connect();
+connect().catch(() => {});

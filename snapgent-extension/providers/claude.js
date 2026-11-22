@@ -124,7 +124,7 @@ const ZSProvider = (() => {
     let card = null;
     for (let el = editor.parentElement, i = 0; el && el !== document.body && i < 12; el = el.parentElement, i++) {
       const cs = getComputedStyle(el);
-      if (parseFloat(cs.borderTopLeftRadius) >= 14) card = el;
+      if (Number.parseFloat(cs.borderTopLeftRadius) >= 14) card = el;
     }
     return card || editor.parentElement;
   };

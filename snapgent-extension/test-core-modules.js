@@ -12,7 +12,7 @@ function loadCoreGlobal(filename, globalName, extraSandbox) {
   const code = fs.readFileSync(full, "utf8") + `\n;globalThis.${globalName} = ${globalName};`;
   const sandbox = Object.assign({ console, setTimeout, clearTimeout, setInterval, clearInterval, Date }, extraSandbox || {});
   sandbox.globalThis = sandbox;
-  vm.runInNewContext(code, sandbox, { filename: full });
+  vm.runInNewContext(code, sandbox, { filename: full }); // NOSONAR test only: own local core/*.js read from disk, no external input
   return sandbox[globalName];
 }
 
@@ -411,4 +411,7 @@ function check(name, cond, detail) {
 
   console.log(`\n${passed}/${passed + failed} checks passed`);
   process.exit(failed ? 1 : 0);
-})();
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

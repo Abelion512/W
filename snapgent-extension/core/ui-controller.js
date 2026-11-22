@@ -861,9 +861,14 @@ const ZSUiController = (() => {
       document.documentElement.appendChild(setupCard);
 
       setupCard.querySelector("#zs-setup-copy").addEventListener("click", () => {
-        try { navigator.clipboard.writeText(GITHUB_URL); } catch {
+        const fallbackCopy = () => {
           const inp = setupCard.querySelector("#zs-setup-link");
           inp.select(); try { document.execCommand("copy"); } catch {}
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(GITHUB_URL).catch(fallbackCopy);
+        } else {
+          fallbackCopy();
         }
         const btn = setupCard.querySelector("#zs-setup-copy");
         btn.textContent = "Copied!";
@@ -1045,11 +1050,7 @@ const ZSUiController = (() => {
               ? `Open a <b>place</b> in Studio`
               : (appDown || studioDown) && studioProcUp
                 ? `Studio not connected`
-                : appDown
-                  ? `Open <b>Studio</b>`
-                  : studioDown
-                    ? `Open <b>Studio</b>`
-                    : `Open <b>Studio</b>`;
+                : `Open <b>Studio</b>`;
           label = `▶︎ Start`; kind = "start";
         }
         if (getSelectedTargetId() === "roblox") disabled = !bridgeOk && !addonOk;
@@ -1490,7 +1491,7 @@ const ZSUiController = (() => {
           // card is rounded. Keep a soft minimum so the ring hugs the unit.
           const now = performance.now();
           if (gf !== glowNode || now - glowAt > 500) {
-            const rawRadius = parseInt(getComputedStyle(gf).borderRadius, 10);
+            const rawRadius = Number.parseInt(getComputedStyle(gf).borderRadius, 10);
             glowRadius = (rawRadius > 0 ? Math.min(rawRadius, 24) : 18) + "px";
             glowBg = opaqueBg(gf);
             glowNode = gf;
@@ -1689,7 +1690,7 @@ const ZSUiController = (() => {
       if (!c || c === "transparent") return null;
       const m = c.match(/rgba?\(([^)]+)\)/i);
       if (!m) return null;
-      const p = m[1].split(",").map((x) => parseFloat(x));
+      const p = m[1].split(",").map((x) => Number.parseFloat(x));
       return { r: p[0], g: p[1], b: p[2], a: p.length >= 4 ? p[3] : 1 };
     }
     // Source-over compositing of a (possibly translucent) fg onto an opaque bg.
