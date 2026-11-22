@@ -758,11 +758,24 @@ class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
                 "type": "call_tool",
                 "name": "read_file",
                 "arguments": {"path": "README.md"},
+                "promptId": sent["id"],
             },
         )
         rejection = [m for m in client.sent if m.get("type") == "tool_result"][-1]
         self.assertFalse(rejection["ok"])
         self.assertEqual(rejection["kind"], "context_only")
+        # A tool call from another prompt on the same socket is not gated.
+        await manager._handle_request(
+            client,
+            {
+                "id": 12,
+                "type": "call_tool",
+                "name": "read_file",
+                "arguments": {"path": "README.md"},
+            },
+        )
+        unrelated = [m for m in client.sent if m.get("type") == "tool_result"][-1]
+        self.assertNotEqual(unrelated.get("kind"), "context_only")
         await manager._handle_request(
             client,
             {

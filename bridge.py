@@ -1084,8 +1084,9 @@ class Bridge:
                 {"type": "tool_result", "id": request_id, "ok": False, "error": "Invalid tool call."},
             )
             return
-        if any(pid in self._context_only_prompts and owner is websocket
-               for pid, owner in self._prompt_owners.items()):
+        prompt_id = request.get("promptId")
+        if (isinstance(prompt_id, str) and prompt_id in self._context_only_prompts
+                and self._prompt_owners.get(prompt_id) is websocket):
             await self._send_client(
                 websocket,
                 {
