@@ -272,7 +272,7 @@ def _worktree_git_dir(root: Path) -> Optional[Path]:
                 return None
             if any(part not in ("..", ".") for part in relative.parts):
                 return None
-            common = (gitdir / relative).resolve()
+            common = (gitdir / relative).resolve()  # NOSONAR relative path restricted to '..' and checked against the parent git dir
             if common != gitdir.parent.parent:
                 return None
             if common.is_dir() and (common / "HEAD").is_file() and common.name == ".git":

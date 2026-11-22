@@ -56,7 +56,7 @@ def rpc(url: str, token: str, method: str, params: Dict[str, Any], rpc_id: int =
     url = validate_url(url)
     payload = {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params}
     request = urllib.request.Request(
-        url,
+        url,  # NOSONAR validate_url() restricts this to the loopback bridge
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
         method="POST",
