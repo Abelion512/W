@@ -811,7 +811,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "status":
         // Self-heal after a worker wake-up, but never while parked on a refused
         // token: an open tab polls this every 5 s and would redial each time.
-        if (!connected && !authRequired) connect();
+        if (!connected && !authRequired) connect().catch(() => {});
         else refreshBridgeStatus(); // stale-guarded (5 s), fire-and-forget
         if (bridgeToken === null) bridgeToken = await readBridgeToken();
         sendResponse(statusObj());
@@ -938,7 +938,7 @@ if (typeof chrome !== "undefined" && chrome.alarms) {
     chrome.alarms.create("zs-keepalive", { periodInMinutes: 0.5 });
     chrome.alarms.onAlarm.addListener((alarm) => {
       if (!alarm || alarm.name !== "zs-keepalive") return;
-      if (!connected && !authRequired) connect();
+      if (!connected && !authRequired) connect().catch(() => {});
       else runHeartbeatTick();
     });
   } catch {}

@@ -53,6 +53,7 @@ def validate_url(url: str) -> str:
 
 
 def rpc(url: str, token: str, method: str, params: Dict[str, Any], rpc_id: int = 1) -> Dict[str, Any]:
+    url = validate_url(url)
     payload = {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params}
     request = urllib.request.Request(
         url,

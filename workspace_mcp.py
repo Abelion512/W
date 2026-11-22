@@ -270,8 +270,10 @@ def _worktree_git_dir(root: Path) -> Optional[Path]:
             relative = Path(common_rel)
             if relative.is_absolute() or "\x00" in common_rel:
                 return None
+            if any(part not in ("..", ".") for part in relative.parts):
+                return None
             common = (gitdir / relative).resolve()
-            if not common.is_relative_to(gitdir.parent.parent):
+            if common != gitdir.parent.parent:
                 return None
             if common.is_dir() and (common / "HEAD").is_file() and common.name == ".git":
                 return common

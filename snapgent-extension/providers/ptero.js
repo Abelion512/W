@@ -203,8 +203,7 @@ const ZSProvider = (() => {
     const id = (firstAssistant && (firstAssistant.dataset.msgId || firstAssistant.dataset.messageId)) ||
       first.dataset.msgId || first.dataset.messageId;
     if (id) return `ptero:${id}`;
-    if (!ids.has(first)) ids.set(first, ++nextId);
-    return `ptero:${ids.get(first)}`;
+    return `ptero:${idTracker.idOf(first)}`;
   };
 
   function installSendHooks(handlers) {
