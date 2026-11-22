@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-22T01:20:47.396335+00:00",
+  "generatedAt": "2026-11-22T20:17:03.750680+00:00",
   "source": "docs/WEB_AI_CAPABILITIES.md + open-tab titles (no prompts sent)",
   "policy": {
     "defaultTier": "balanced",
@@ -60,7 +60,7 @@
         "vision",
         "web"
       ],
-      "observedTitle": "Initializing MCP Tool Discovery - Google Gemini"
+      "observedTitle": "Repo Server Command Discovery - Google Gemini"
     },
     {
       "provider": "glm",
