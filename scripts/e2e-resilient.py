@@ -162,8 +162,8 @@ def a2a_send_task(
             },
         },
     }
-    req = urllib.request.Request(
-        validate_loopback_url(a2a_url),  # NOSONAR restricted to loopback by the helper
+    req = urllib.request.Request(  # NOSONAR URL is restricted to loopback by validate_loopback_url()
+        validate_loopback_url(a2a_url),
         data=json.dumps(body).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
@@ -235,8 +235,8 @@ def a2a_cancel_task(
         "method": "tasks/cancel",
         "params": {"id": task_id},
     }
-    req = urllib.request.Request(
-        validate_loopback_url(a2a_url),  # NOSONAR restricted to loopback by the helper
+    req = urllib.request.Request(  # NOSONAR URL is restricted to loopback by validate_loopback_url()
+        validate_loopback_url(a2a_url),
         data=json.dumps(body).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
