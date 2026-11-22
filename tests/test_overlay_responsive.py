@@ -25,7 +25,10 @@ REQUIRED_PROVIDERS = ("gemini", "deepseek", "rudder", "ptero", "claude", "glm")
 
 
 def _overlay_copies():
-    copies = [p for p in REPO.rglob("overlay.css") if ".git" not in p.parts]
+    copies = [
+        p for p in REPO.rglob("overlay.css")
+        if not any(part.startswith(".") for part in p.relative_to(REPO).parts)
+    ]
     return sorted(copies) if copies else [CANONICAL_OVERLAY]
 
 
