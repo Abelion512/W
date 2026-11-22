@@ -14,8 +14,19 @@ FILES = {
 }
 
 
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+def checked_version(raw: str) -> str:
+    """Accept only strict semver so file content cannot steer a write."""
+    version = raw.strip()
+    if not VERSION_RE.fullmatch(version):
+        raise SystemExit(f"invalid version: {raw!r}")
+    return version
+
+
 def current() -> str:
-    return (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    return checked_version((ROOT / "VERSION").read_text(encoding="utf-8"))
 
 
 def values() -> dict[str, str]:
@@ -41,8 +52,8 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.set:
-        (ROOT / "VERSION").write_text(args.set.strip() + "\n", encoding="utf-8")
-        version = args.set.strip()
+        version = checked_version(args.set)
+        (ROOT / "VERSION").write_text(version + "\n", encoding="utf-8")
         for name, (path, pattern) in FILES.items():
             if not path.exists():
                 continue

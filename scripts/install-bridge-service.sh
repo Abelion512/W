@@ -22,7 +22,7 @@ PYTHON_PATH="$(command -v "$PYTHON_BIN")"
 
 mkdir -p "$UNIT_DIR" "$ENV_DIR"
 
-if [ ! -f "$ENV_FILE" ]; then
+if [[ ! -f "$ENV_FILE" ]]; then
     cat > "$ENV_FILE" <<EOF
 # Workspace root the MCP server is scoped to. Change if needed.
 # Workspace root is read from config.json; change it with switch-project.sh.
