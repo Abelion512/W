@@ -256,6 +256,7 @@ const ZSProvider = (() => {
     return _stream.grewWithin(timings.GEN_IDLE_MS);
   }
   const isGenerating = genActive;
+  const isBusyNow = genActive;
   const isHardGenerating = () => !!stopButton();
 
   function snapshot() {

@@ -535,7 +535,7 @@ const ZSProvider = (() => {
   //               idle windows (what isGenerating actually gates on)
   function genDebug() {
     try {
-      sampleStream();
+      const snap = sampleStream();
       const btn = document.querySelector(S.sendBtn);
       const path = btn && btn.querySelector("path");
       const rp = btn && btn.querySelector("rect");
@@ -544,8 +544,8 @@ const ZSProvider = (() => {
         stopBtn: isStopBtn(btn),
         btnGlyph: rp ? "rect" : (path ? (path.getAttribute("d") || "").slice(0, 6) : "none"),
         reasoning: reasoningInProgress(lastAssistant()),
-        streamMax: _streamMax,
-        streamAgeMs: _streamAt ? Date.now() - _streamAt : -1,
+        streamMax: snap.maxLen,
+        streamAgeMs: snap.at ? Date.now() - snap.at : -1,
         grewGen: grewWithin(timings.GEN_IDLE_MS),
         grewReason: grewWithin(timings.REASON_IDLE_MS),
         gen: isGenerating(),
