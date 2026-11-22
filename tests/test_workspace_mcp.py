@@ -346,6 +346,20 @@ class WorkspaceMcpTests(unittest.TestCase):
         # Secrets must not ride through: env is an explicit allowlist.
         self.assertLess(argv.index("--clearenv"), argv.index("--setenv"))
 
+    def test_fail_or_unsandboxed_helper(self):
+        with patch.dict("os.environ", {"ZS_ALLOW_UNSANDBOXED": "0"}, clear=False):
+            with self.assertRaises(RuntimeError) as ctx:
+                workspace_mcp._fail_or_unsandboxed(
+                    ["true"], "warn msg", "fatal reason."
+                )
+            self.assertIn("SECURITY FATAL: fatal reason.", str(ctx.exception))
+            self.assertIn("ZS_ALLOW_UNSANDBOXED=1", str(ctx.exception))
+        with patch.dict("os.environ", {"ZS_ALLOW_UNSANDBOXED": "1"}, clear=False):
+            self.assertEqual(
+                workspace_mcp._fail_or_unsandboxed(["true"], "warn msg", "fatal reason."),
+                ["true"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

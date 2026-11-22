@@ -5,7 +5,11 @@
 // eslint-disable-next-line no-unused-vars
 const ZSProvider = (() => {
   "use strict";
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const B = ZSProviderBase;
+  const sleep = B.sleep;
+  const visible = B.visible;
+  const waitFor = B.waitFor;
+  const idTracker = B.createWeakIdTracker("claude-");
   let diag = () => {};
   let missingEditorSince = 0;
   let locked = false;
@@ -50,7 +54,7 @@ const ZSProvider = (() => {
     STABLE_MS: 10000,
     RESPONSE_TIMEOUT_MS: 300000,
   };
-  const visible = (el) => !!el && el.isConnected && el.getClientRects().length > 0;
+  // visible inherited from ZSProviderBase.
   const without = (root, excludeSel) => {
     if (!root) return "";
     const skip = [".zs-chip", S.thinking, S.chrome, excludeSel].filter(Boolean).join(",");
@@ -114,55 +118,25 @@ const ZSProvider = (() => {
   const isFreshChat = () => chatIsEmpty() && !!getEditor();
   const composerFrame = () => {
     const editor = getEditor();
-    return editor && (editor.closest("form") || editor.parentElement);
+    if (!editor) return null;
+    const form = editor.closest("form");
+    if (form) return form;
+    let card = null;
+    for (let el = editor.parentElement, i = 0; el && el !== document.body && i < 12; el = el.parentElement, i++) {
+      const cs = getComputedStyle(el);
+      if (Number.parseFloat(cs.borderTopLeftRadius) >= 14) card = el;
+    }
+    return card || editor.parentElement;
   };
   const barMount = () => {
-    const frame = composerFrame();
-    // Mount ABOVE the whole composer card (outside it) so the bar never overlaps
-    // the editor's placeholder row. The card is the nearest ancestor of the
-    // editor with a large radius or a border. The radius check must NOT require
-    // a border: the 2026-11 card (.bg-surface-3) is borderless at radius 14px,
-    // and with the border clause the walk stopped at an inner wrapper instead -
-    // the bar then mounted INSIDE the card and collided with the placeholder
-    // (measured live: "Ready." rendered under "How can I help you today?").
-    let card = frame;
-    const editor = getEditor();
-    for (let el = editor, i = 0; el && el !== document.body && i < 12; el = el.parentElement, i++) {
-      const cs = getComputedStyle(el);
-      if (parseFloat(cs.borderTopLeftRadius) >= 14 || parseFloat(cs.borderTopWidth) > 0) {
-        card = el;
-        break;
-      }
-    }
+    const card = composerFrame();
     return card && card.parentElement ? { parent: card.parentElement, before: card } : null;
   };
 
-  const ids = new WeakMap();
-  let nextId = 0;
-  function lastAssistantId() {
-    const item = lastAssistant();
-    if (!item) return null;
-    if (!ids.has(item)) ids.set(item, ++nextId);
-    return ids.get(item);
-  }
+  const lastAssistantId = () => idTracker.lastId(lastAssistant);
   const streamText = (item) => without(bodyOf(item));
-  const streamLen = (item) => streamText(item === undefined ? lastAssistant() : item).length;
-  let sampledItem = null;
-  let sampledLen = 0;
-  let grewAt = 0;
-  function sampleStream() {
-    const item = lastAssistant();
-    const length = streamText(item).length;
-    const now = Date.now();
-    if (item !== sampledItem || length < sampledLen - 400) {
-      sampledItem = item;
-      sampledLen = length;
-      grewAt = now;
-    } else if (length > sampledLen) {
-      sampledLen = length;
-      grewAt = now;
-    }
-  }
+  const stream = B.createStreamTracker(streamText, lastAssistant, { minGrow: 0 });
+  const streamLen = stream.streamLen;
   const hasSendLabel = (el) => {
     if (!el) return false;
     const label = [
@@ -189,10 +163,9 @@ const ZSProvider = (() => {
   const stopButton = () => [...document.querySelectorAll(S.stop)].find(visible) || null;
   const isHardGenerating = () => !!stopButton();
   const isGenerating = () => {
-    sampleStream();
-    return isHardGenerating() || (sampledLen > 0 && Date.now() - grewAt < timings.GEN_IDLE_MS);
+    stream.sampleStream();
+    return isHardGenerating() || stream.grewWithin(timings.GEN_IDLE_MS);
   };
-  const isBusyNow = isGenerating;
 
   function snapshot() {
     return { th: 0, rp: streamLen() };
@@ -206,14 +179,7 @@ const ZSProvider = (() => {
       item,
     };
   }
-  async function waitFor(predicate, timeout) {
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
-      if (predicate()) return true;
-      await sleep(120);
-    }
-    return false;
-  }
+  // waitFor inherited from ZSProviderBase.
 
   function setInputLock(on) {
     const editor = on ? getEditor() : (visible(lockedEditor) ? lockedEditor : getEditor());
@@ -299,11 +265,7 @@ const ZSProvider = (() => {
     missingEditorSince = 0;
     return null;
   }
-  const isTooLongMsg = (text) => /conversation.{0,30}(too long|limit)|context.{0,20}limit/i.test(text);
-  const isBusyMsg = (text) => /try again later|temporarily unavailable|rate limit|too many requests/i.test(text);
-  const turnHalted = () => false;
-  const findContinueBtn = () => null;
-  const clickContinueBtn = () => false;
+  // isTooLongMsg, isBusyMsg, turnHalted, findContinueBtn, clickContinueBtn inherited from ZSProviderBase.
   const conversationKey = () =>
     location.pathname === "/" || location.pathname === "/new" ? "" : location.pathname;
 
@@ -338,23 +300,9 @@ const ZSProvider = (() => {
     }, true);
   }
 
-  const commandShape = /"(?:command|tool)"\s*:\s*"|###\s*(?:lua|mcp_tool)/i;
-  function findToolBlockSpot(item) {
-    const body = bodyOf(item);
-    if (!body) return null;
-    let found = null;
-    body.querySelectorAll("pre,code,p,li").forEach((el) => {
-      if (el.closest(".zs-chip, .zs-tool-hide")) return;
-      const text = (el.textContent || "").trim();
-      if (text && commandShape.test(text)) {
-        el.classList.add("zs-tool-hide");
-        found = found || { parent: el.parentElement, ref: el };
-      }
-    });
-    return found;
-  }
+  const findToolBlockSpot = (item) => B.findToolBlockSpot(bodyOf(item));
 
-  return {
+  return B.createProvider({
     id: "claude",
     displayName: "Claude",
     sendRetryLimit: 1,
@@ -368,12 +316,11 @@ const ZSProvider = (() => {
     streamLen, snapshot,
     getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barMount,
     setInputLock, typeAndSend, stopGeneration,
-    isGenerating, isBusyNow, isHardGenerating,
+    isGenerating, isHardGenerating,
     enforceComposer, ensureComposerReady,
-    turnHalted, findContinueBtn, clickContinueBtn,
-    scanError, isTooLongMsg, isBusyMsg,
+    scanError,
     attachImages: () => false,
     clearAttachments: () => {},
     conversationKey, installSendHooks, findToolBlockSpot,
-  };
+  });
 })();

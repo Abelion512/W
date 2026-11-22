@@ -460,7 +460,7 @@ def web_search_pii_violations(prompt: str, metadata: Optional[Dict[str, Any]] = 
 
 
 class Bridge:
-    def __init__(self, token: Optional[str] = None) -> None:
+    def __init__(self, token: Optional[str] = None, disconnect_grace: float = 0.0) -> None:
         self.servers: Dict[str, MCPServer] = {}
         self.clients = set()
         self._client_lock = asyncio.Lock()
@@ -469,6 +469,7 @@ class Bridge:
         self.started_at = time.time()
         self.started_monotonic = time.monotonic()
         self.token = token
+        self._disconnect_grace: float = max(0.0, float(disconnect_grace))
         self._reject_log: Dict[str, Tuple[float, int]] = {}
         self._rotate_lock = asyncio.Lock()
         # A2A delegation. Fan-out: one lock PER PROVIDER, so tasks pinned to
@@ -480,6 +481,10 @@ class Bridge:
         # may resolve the task. `self.clients` membership requires the bridge
         # token handshake, so delivery is restricted to authenticated sockets.
         self._prompt_owners: Dict[str, Any] = {}
+        self._task_to_prompt: Dict[str, str] = {}
+        self._prompt_to_task: Dict[str, str] = {}
+        self._disconnect_timers: Dict[Any, asyncio.TimerHandle] = {}
+        self._a2a_server: Any = None
         # websocket -> presented a valid bridge token at handshake
         self._client_token_auth: Dict[Any, bool] = {}
         self._last_client: Any = None
@@ -758,16 +763,55 @@ class Bridge:
             return False
         return True
 
-    def _fail_pending_prompts(self, reason: str) -> None:
-        for future in list(self._pending_prompts.values()):
+    def _fail_pending_prompts(self, reason: str, owner: Any = None) -> None:
+        for prompt_id, future in list(self._pending_prompts.items()):
+            if owner is not None and self._prompt_owners.get(prompt_id) is not owner:
+                continue
             if not future.done():
                 future.set_result({"ok": False, "error": reason})
-        self._pending_prompts.clear()
-        self._prompt_owners.clear()
-        self._context_only_prompts.clear()
+            self._pending_prompts.pop(prompt_id, None)
+            self._prompt_owners.pop(prompt_id, None)
+            self._context_only_prompts.discard(prompt_id)
+            task_id = self._prompt_to_task.pop(prompt_id, None)
+            if task_id:
+                self._task_to_prompt.pop(task_id, None)
+        if owner is not None:
+            timer = self._disconnect_timers.pop(owner, None)
+            if timer is not None:
+                timer.cancel()
+
+    def _adopt_orphaned_prompts(self, websocket: Any) -> int:
+        adopted = 0
+        for old_owner, timer in list(self._disconnect_timers.items()):
+            timer.cancel()
+            self._disconnect_timers.pop(old_owner, None)
+            for prompt_id, current_owner in list(self._prompt_owners.items()):
+                if current_owner is old_owner:
+                    self._prompt_owners[prompt_id] = websocket
+                    adopted += 1
+        return adopted
+
+    async def cancel_task(self, task_id: str) -> bool:
+        prompt_id = self._task_to_prompt.get(task_id)
+        if not prompt_id:
+            return False
+        owner = self._prompt_owners.get(prompt_id)
+        if owner is not None:
+            try:
+                await self._send_client(owner, {"type": "cancel_prompt", "id": prompt_id})
+            except Exception:  # noqa: BLE001
+                pass
+        future = self._pending_prompts.get(prompt_id)
+        if future is not None and not future.done():
+            future.set_result({"ok": False, "error": "Task canceled by the caller."})
+        return True
 
     async def submit_prompt(
-        self, prompt: str, timeout: float, metadata: Optional[Dict[str, Any]] = None
+        self,
+        prompt: str,
+        timeout: float,
+        metadata: Optional[Dict[str, Any]] = None,
+        task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Delegate one prompt to the browser extension. Fan-out by provider.
 
@@ -863,6 +907,9 @@ class Bridge:
             future: asyncio.Future = loop.create_future()
             self._pending_prompts[prompt_id] = future
             self._prompt_owners[prompt_id] = client
+            if isinstance(task_id, str) and task_id:
+                self._task_to_prompt[task_id] = prompt_id
+                self._prompt_to_task[prompt_id] = task_id
             if context_only:
                 self._context_only_prompts.add(prompt_id)
             try:
@@ -883,7 +930,8 @@ class Bridge:
                 # streaming after the caller has given up, and the tab refuses
                 # every later prompt until someone reloads the page by hand.
                 try:
-                    await self._send_client(client, {"type": "cancel_prompt", "id": prompt_id})
+                    owner = self._prompt_owners.get(prompt_id) or client
+                    await self._send_client(owner, {"type": "cancel_prompt", "id": prompt_id})
                     log(f"prompt {prompt_id} timed out; asked the extension to stop")
                 except Exception:  # noqa: BLE001 - the deadline is what matters
                     pass
@@ -892,6 +940,9 @@ class Bridge:
                 self._pending_prompts.pop(prompt_id, None)
                 self._prompt_owners.pop(prompt_id, None)
                 self._context_only_prompts.discard(prompt_id)
+                task_id = self._prompt_to_task.pop(prompt_id, None)
+                if task_id:
+                    self._task_to_prompt.pop(task_id, None)
 
     async def _resolve_prompt(self, websocket: Any, request: Dict[str, Any]) -> None:
         prompt_id = request.get("prompt_id")
@@ -936,7 +987,11 @@ class Bridge:
         async with self._client_lock:
             self.clients.add(websocket)
             self._last_client = websocket
-        log("extension connected")
+        adopted = self._adopt_orphaned_prompts(websocket)
+        if adopted:
+            log(f"extension reconnected; resumed {adopted} in-flight prompt(s)")
+        else:
+            log("extension connected")
         await self._send_client(websocket, self._connected_message())
         pending: set = set()
         limiter = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
@@ -991,12 +1046,28 @@ class Bridge:
             async with self._client_lock:
                 self.clients.discard(websocket)
                 remaining = bool(self.clients)
-            # Fail prompts owned by the departing socket even when other
-            # clients remain: otherwise the caller waits the full timeout on
-            # an owner that will never answer.
-            if not remaining or any(owner is websocket for owner in self._prompt_owners.values()):
+            # Fail prompts owned by the departing socket, optionally waiting
+            # through a short reconnect grace window so MV3 worker restarts in
+            # long sessions do not abort live browser generations.
+            owns_prompts = any(owner is websocket for owner in self._prompt_owners.values())
+            if owns_prompts:
+                if self._disconnect_grace > 0:
+                    loop = asyncio.get_running_loop()
+                    self._disconnect_timers[websocket] = loop.call_later(
+                        self._disconnect_grace,
+                        self._fail_pending_prompts,
+                        "The extension disconnected.",
+                        websocket,
+                    )
+                    log(f"extension disconnected; holding prompt(s) for {self._disconnect_grace:.0f}s reconnect grace")
+                else:
+                    self._fail_pending_prompts("The extension disconnected.", owner=websocket)
+                    log("extension disconnected")
+            elif not remaining and not self._disconnect_timers:
                 self._fail_pending_prompts("The extension disconnected.")
-            log("extension disconnected")
+                log("extension disconnected")
+            else:
+                log("extension disconnected")
 
     async def _handle_request(self, websocket: Any, request: Dict[str, Any]) -> None:
         request_id = request.get("id")
@@ -1067,6 +1138,13 @@ class Bridge:
             await self._change_server(websocket, request, remove=True)
         elif kind == "prompt_result":
             await self._resolve_prompt(websocket, request)
+        elif kind == "prompt_chunk":
+            prompt_id = request.get("prompt_id")
+            if isinstance(prompt_id, str) and websocket is self._prompt_owners.get(prompt_id):
+                task_id = self._prompt_to_task.get(prompt_id)
+                chunk_text = str(request.get("text") or "")
+                if task_id and chunk_text and self._a2a_server is not None:
+                    self._a2a_server.emit_chunk(task_id, chunk_text)
         else:
             await self._send_client(
                 websocket,
@@ -1331,19 +1409,26 @@ def build_a2a_server(bridge: "Bridge", loop: asyncio.AbstractEventLoop) -> Any:
             # Path only, never the value: bridge_debug.log is world-readable.
             log(f"A2A token created at {a2a_token_path()}")
 
+    server_ref: List[Any] = [None]
+
     def submit(
         prompt: str,
         task_timeout: float,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        srv = server_ref[0]
+        tid = srv.current_task_id() if srv is not None else None
         future = asyncio.run_coroutine_threadsafe(
-            bridge.submit_prompt(prompt, task_timeout, metadata), loop
+            bridge.submit_prompt(prompt, task_timeout, metadata, task_id=tid), loop
         )
         try:
             return future.result(task_timeout + 60)
         except concurrent.futures.TimeoutError:
             future.cancel()
             return {"ok": False, "error": "Timed out waiting for the browser bridge."}
+
+    def on_cancel(task_id: str) -> None:
+        asyncio.run_coroutine_threadsafe(bridge.cancel_task(task_id), loop)
 
     server = a2a_server.A2AServer(
         submit,
@@ -1352,7 +1437,16 @@ def build_a2a_server(bridge: "Bridge", loop: asyncio.AbstractEventLoop) -> Any:
         token=token,
         base_url=f"http://{HOST}:{port}",
         timeout_ms=timeout_ms,
+        on_cancel=on_cancel,
     )
+    server_ref[0] = server
+    bridge._a2a_server = server
+    if bridge._disconnect_grace <= 0.0:
+        raw_grace = (os.environ.get("ZS_DISCONNECT_GRACE_SECONDS") or "15").strip()
+        try:
+            bridge._disconnect_grace = max(0.0, float(raw_grace))
+        except ValueError:
+            bridge._disconnect_grace = 15.0
     return server
 
 

@@ -84,11 +84,19 @@
 
   document.addEventListener("zs-cm-sync", () => { try { syncAll(); } catch {} }, true);
 
-  // A streaming block changes without anyone asking, and the isolated world only
-  // syncs when it reads. That is enough for correctness, but a cheap idle sync
-  // keeps the attribute warm so the very first read of a finished block is
-  // already current.
-  const tick = () => { try { syncAll(); } catch {} };
-  setInterval(tick, 1000);
+  // Event-driven sync via MutationObserver (replaces 1s setInterval polling).
+  let syncTimer = null;
+  const tick = () => { syncTimer = null; try { syncAll(); } catch {} };
+  const scheduleTick = () => {
+    if (syncTimer) return;
+    syncTimer = setTimeout(tick, 250);
+  };
+  const attachObserver = () => {
+    if (typeof MutationObserver !== "function" || !document.documentElement) return;
+    const obs = new MutationObserver(scheduleTick);
+    try { obs.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); } catch {}
+  };
+  if (document.documentElement) attachObserver();
+  else document.addEventListener("DOMContentLoaded", attachObserver, { once: true });
   tick();
 })();

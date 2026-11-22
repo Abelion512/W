@@ -9,7 +9,16 @@ is the implementation and maintenance reference.
 |---|---|
 | `snapgent-extension/core/main.js` | builds `#zs-bar` / `#zs-composer-glow`; `placeBar()` positions both each frame; `showStop()` sets `data-agent-active` |
 | `snapgent-extension/overlay.css` | tokens, surfaces, ring, chips, accessibility media queries |
-| `snapgent-extension/providers/*.js` | `barMount`, `barAnchor`, `composerFrame`, `getEditor` per site |
+| `snapgent-extension/providers/base.js` | shared thin base helper (`ZSProviderBase`): stream tracking, WeakMap turn IDs, `MutationObserver` DOM/stop watchers, and default provider adapters |
+| `snapgent-extension/providers/*.js` | site-specific selectors, `barMount`, `barAnchor`, `composerFrame`, `getEditor` overriding `ZSProviderBase` |
+
+## Event-driven architecture
+
+DOM observation and lifecycle scheduling no longer use `setInterval` polling:
+
+- **Content scripts (`core/main.js`, `core/dom-engine.js`, `core/ui-controller.js`)**: DOM camouflage sweeps, live generation/token-meter ticks, auto-resume checks, loop stall watchdog, and host theme tracking are driven by `MutationObserver`, `visibilitychange`, `matchMedia`, `PerformanceObserver` (`longtask`), and an `onStop` event bus (with one-shot `setTimeout` debouncing only while active).
+- **Providers (`providers/base.js`, `providers/*.js`)**: shared boilerplate lives in `ZSProviderBase` (`providers/base.js`, loaded before each provider in `manifest.json`). Dynamic stop-button waits (`arena.js`, `rudder.js`), locked placeholder re-assertion (`kimi.js`), and CodeMirror syncing (`chatgpt-cm.js`) use `MutationObserver`.
+- **Service worker (`background.js`)**: `waitForConnection` resolves via socket `onopen` waiters, and heartbeat/stale-socket checks (`ZSGuard.heartbeatDecision`) run on the 30-second MV3 `chrome.alarms` (`zs-keepalive`) alarm.
 
 ## Positioning loop
 

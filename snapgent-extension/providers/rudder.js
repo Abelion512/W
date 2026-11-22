@@ -12,14 +12,11 @@
 // eslint-disable-next-line no-unused-vars
 const ZSProvider = (() => {
   "use strict";
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const B = ZSProviderBase;
+  const sleep = B.sleep;
   let diag = () => {};
   let lockedEditor = null;
-  let sampledItem = null;
-  let sampledLen = 0;
-  let grewAt = 0;
-  const ids = new WeakMap();
-  let nextId = 0;
+  const idTracker = B.createWeakIdTracker("rudder-");
 
   // Rudder's stable class tokens. The slash is part of the Tailwind class, so
   // [class~="group/user"] is used instead of an escaped CSS class selector.
@@ -47,19 +44,12 @@ const ZSProvider = (() => {
     STABLE_MS: 10000,
     RESPONSE_TIMEOUT_MS: 300000,
   };
-  const visible = (el) => !!el && el.isConnected && el.getClientRects().length > 0;
-  const excluded = (el) => !el.closest("#zs-root");
+  const visible = B.visible;
+  const excluded = B.notOverlay;
   const isUserItem = (item) => !!item && item.matches(S.user);
   const isAssistantItem = (item) => !!item && item.matches(S.assistant);
   const allItems = () => [...document.querySelectorAll(`${S.user},${S.assistant}`)]
     .filter(excluded);
-  const assistantItems = () => allItems().filter(isAssistantItem);
-  const assistantCount = () => assistantItems().length;
-  const userCount = () => allItems().filter(isUserItem).length;
-  const lastAssistant = () => {
-    const items = assistantItems();
-    return items.length ? items[items.length - 1] : null;
-  };
 
   function getEditor() {
     if (visible(lockedEditor) && excluded(lockedEditor)) return lockedEditor;
@@ -72,8 +62,6 @@ const ZSProvider = (() => {
     const editor = getEditor();
     return editor ? ("value" in editor ? editor.value : editor.innerText || editor.textContent || "") : "";
   };
-  const chatIsEmpty = () => allItems().length === 0;
-  const isFreshChat = () => chatIsEmpty() && !!getEditor();
   const composerFrame = () => {
     const editor = getEditor();
     return editor && (editor.closest("form") || editor.parentElement);
@@ -112,28 +100,14 @@ const ZSProvider = (() => {
   const itemText = (item) => textWithout(bodyOf(item));
   const classifyText = (item, excludeSel) => textWithout(bodyOf(item), excludeSel);
   const streamText = (item) => textWithout(bodyOf(item));
-  const streamLen = (item) => streamText(item === undefined ? lastAssistant() : item).length;
+  const stream = B.createStreamTracker(streamText, () => api.lastAssistant(), { minGrow: 0 });
+  const streamLen = stream.streamLen;
   const lastAssistantId = () => {
-    const item = lastAssistant();
+    const item = api.lastAssistant();
     if (!item) return null;
     const id = item.getAttribute("data-message-id") || item.getAttribute("data-messageid") || item.id;
-    if (id) return id;
-    if (!ids.has(item)) ids.set(item, ++nextId);
-    return ids.get(item);
+    return id || idTracker.idOf(item);
   };
-  function sampleStream() {
-    const item = lastAssistant();
-    const length = streamLen(item);
-    const now = Date.now();
-    if (item !== sampledItem || length < sampledLen - 400) {
-      sampledItem = item;
-      sampledLen = length;
-      grewAt = now;
-    } else if (length > sampledLen) {
-      sampledLen = length;
-      grewAt = now;
-    }
-  }
 
   const form = () => {
     const editor = getEditor();
@@ -163,16 +137,15 @@ const ZSProvider = (() => {
   };
   const isHardGenerating = () => !!stopButton();
   const isGenerating = () => {
-    sampleStream();
-    return isHardGenerating() || (sampledLen > 0 && Date.now() - grewAt < timings.GEN_IDLE_MS);
+    stream.sampleStream();
+    return isHardGenerating() || stream.grewWithin(timings.GEN_IDLE_MS);
   };
-  const isBusyNow = isGenerating;
 
   function snapshot() {
     return { th: 0, rp: streamLen() };
   }
   function readAssistant() {
-    const item = lastAssistant();
+    const item = api.lastAssistant();
     return {
       present: !!item,
       reply: item ? streamText(item).trim() : "",
@@ -278,8 +251,8 @@ const ZSProvider = (() => {
     if (payload.length !== String(text == null ? "" : text).length) {
       diag("send.truncated", { from: String(text).length, to: payload.length, cap: SEND_CAP });
     }
-    const beforeUsers = userCount();
-    const beforeAssistants = assistantCount();
+    const beforeUsers = api.userCount();
+    const beforeAssistants = api.assistantCount();
     const wasHard = isHardGenerating();
     const sendReady = () => {
       const button = sendButton();
@@ -321,8 +294,8 @@ const ZSProvider = (() => {
       if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") break;
       button.click();
       sent = await waitFor(() =>
-        editorText().trim() === "" || userCount() > beforeUsers ||
-        assistantCount() > beforeAssistants || (!wasHard && isHardGenerating()),
+        editorText().trim() === "" || api.userCount() > beforeUsers ||
+        api.assistantCount() > beforeAssistants || (!wasHard && isHardGenerating()),
       attempt === 0 ? 5000 : 4000);
       if (!sent && attempt === 0) {
         if (authWall() || editorText().trim() !== payload.trim()) break;
@@ -337,9 +310,12 @@ const ZSProvider = (() => {
       throw new Error("Rudder did not confirm the message was sent");
     }
   }
-  let stopPoll = null;
+  let stopWatcher = null;
+  let stopDeadline = null;
   function stopGeneration() {
-    if (stopPoll) { clearInterval(stopPoll); stopPoll = null; }
+    if (stopWatcher) { stopWatcher.disconnect(); stopWatcher = null; }
+    clearTimeout(stopDeadline);
+    stopDeadline = null;
     const clickIfPresent = () => {
       const button = stopButton();
       if (!button) return false;
@@ -347,15 +323,14 @@ const ZSProvider = (() => {
       return true;
     };
     if (clickIfPresent()) return;
-    // Rudder mounts the native stop control a beat after "Generating" appears;
-    // polling briefly prevents the stop from being swallowed in that gap.
-    const startedAt = Date.now();
-    stopPoll = setInterval(() => {
-      if (clickIfPresent() || Date.now() - startedAt > 8000) {
-        clearInterval(stopPoll);
-        stopPoll = null;
-      }
-    }, 120);
+    // Event-driven watch via MutationObserver (replaces 120ms setInterval).
+    const done = () => {
+      if (stopWatcher) { stopWatcher.disconnect(); stopWatcher = null; }
+      clearTimeout(stopDeadline);
+      stopDeadline = null;
+    };
+    stopWatcher = B.watchDom(() => { if (clickIfPresent()) done(); }, { debounceMs: 50, attributes: true });
+    stopDeadline = setTimeout(done, 8000);
   }
   const enforceComposer = () => {
     const editor = getEditor();
@@ -414,10 +389,7 @@ const ZSProvider = (() => {
     return null;
   }
   const isTooLongMsg = (text) => /conversation.{0,30}(too long|limit)|context.{0,20}limit|message is .{0,40}characters; the limit is|shorten it, or send it in parts/i.test(text);
-  const isBusyMsg = (text) => /try again later|temporarily unavailable|rate limit|too many requests/i.test(text);
-  const turnHalted = () => false;
-  const findContinueBtn = () => null;
-  const clickContinueBtn = () => false;
+  // turnHalted, findContinueBtn, clickContinueBtn, isBusyMsg inherited from ZSProviderBase.
   const conversationKey = () => {
     if (location.pathname === "/" || location.pathname === "/chat" || location.pathname === "/chat/") return "";
     return `rudder:${location.pathname}${location.search}`;
@@ -430,10 +402,10 @@ const ZSProvider = (() => {
       if (!editor || !(editor === event.target || editor.contains(event.target)) ||
           !editorText().trim() || handlers.isBlocked()) return;
       if (!handlers.isStarted()) {
-        if (chatIsEmpty()) handlers.onBlockedAttempt();
+        if (api.chatIsEmpty()) handlers.onBlockedAttempt();
         return;
       }
-      handlers.onUserMessage(assistantCount());
+      handlers.onUserMessage(api.assistantCount());
     }, true);
     document.addEventListener("click", (event) => {
       const target = event.target;
@@ -446,10 +418,10 @@ const ZSProvider = (() => {
       if (sendButton() !== button || button.disabled ||
           button.getAttribute("aria-disabled") === "true" || handlers.isBlocked()) return;
       if (!handlers.isStarted()) {
-        if (chatIsEmpty()) handlers.onBlockedAttempt();
+        if (api.chatIsEmpty()) handlers.onBlockedAttempt();
         return;
       }
-      handlers.onUserMessage(assistantCount());
+      handlers.onUserMessage(api.assistantCount());
     }, true);
   }
 
@@ -469,13 +441,10 @@ const ZSProvider = (() => {
     return found;
   }
 
-  return {
+  const api = B.createProvider({
     id: "rudder",
     displayName: "Rudder",
     sendRetryLimit: 1,
-    // Rudder caps a single message at 4,000 chars. The core uses this budget
-    // before appending a system reminder, and the send path truncates long
-    // tool results instead of letting the site reject the whole turn.
     sendCharBudget: SEND_MAX,
     compactPrompt: true,
     compactToolList: true,
@@ -485,16 +454,16 @@ const ZSProvider = (() => {
     reliableCounts: true,
     init({ diag: d } = {}) { if (d) diag = d; },
     allItems, isUserItem, isAssistantItem, itemText, classifyText,
-    assistantCount, userCount, lastAssistant, lastAssistantId, readAssistant,
+    lastAssistantId, readAssistant,
     streamLen, snapshot,
-    getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barAnchor,
+    getEditor, editorText, composerFrame, barAnchor,
     setInputLock, typeAndSend, stopGeneration,
-    isGenerating, isBusyNow, isHardGenerating,
+    isGenerating, isHardGenerating,
     enforceComposer, ensureComposerReady,
-    turnHalted, findContinueBtn, clickContinueBtn,
-    scanError, isTooLongMsg, isBusyMsg,
+    scanError, isTooLongMsg,
     attachImages: () => false,
     clearAttachments: () => {},
     conversationKey, installSendHooks, findToolBlockSpot,
-  };
+  });
+  return api;
 })();

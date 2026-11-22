@@ -21,7 +21,8 @@
 // eslint-disable-next-line no-unused-vars
 const ZSProvider = (() => {
   "use strict";
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const B = ZSProviderBase;
+  const sleep = B.sleep;
   let diag = () => {}; // injected by core via init()
 
   // DOM selectors for chat.deepseek.com. Grouped so a future site tweak is a
@@ -461,27 +462,10 @@ const ZSProvider = (() => {
       .join("");
     return thinkTxt + "\n" + replyTxt;
   }
-  const streamLen = (item) => streamText(item === undefined ? lastAssistant() : item).length;
-
-  // Stream-growth tracking - the ONLY "is it still streaming?" signal during the
-  // reasoning phase (no <rect>, no spinner then). We track the MAXIMUM length the
-  // current turn has reached and WHEN it last advanced; DOM flicker of a few
-  // chars never counts - only a new maximum (see content history for the full
-  // war story: counting churn as growth froze the loop).
-  let _streamMax = -1, _streamAt = 0, _streamItem = null;
-
-  function sampleStream() {
-    const item = lastAssistant();
-    const len = streamText(item).length;
-    const now = Date.now();
-    // A new turn - a different node, or a big length drop (a virtualized node
-    // recycled into a fresh turn) - starts tracking afresh and counts as active.
-    if (item !== _streamItem || len < _streamMax - 400) {
-      _streamItem = item; _streamMax = len; _streamAt = now; return;
-    }
-    if (len > _streamMax) { _streamMax = len; _streamAt = now; } // forward progress only
-  }
-  const grewWithin = (ms) => _streamMax > 1 && Date.now() - _streamAt < ms;
+  const _stream = B.createStreamTracker(streamText, lastAssistant, { minGrow: 1 });
+  const streamLen = _stream.streamLen;
+  const sampleStream = _stream.sampleStream;
+  const grewWithin = _stream.grewWithin;
 
   // True iff `item` is an assistant turn that has begun REASONING but produced no
   // answer yet and has NOT been halted.
@@ -551,7 +535,7 @@ const ZSProvider = (() => {
   //               idle windows (what isGenerating actually gates on)
   function genDebug() {
     try {
-      sampleStream();
+      const snap = sampleStream();
       const btn = document.querySelector(S.sendBtn);
       const path = btn && btn.querySelector("path");
       const rp = btn && btn.querySelector("rect");
@@ -560,8 +544,8 @@ const ZSProvider = (() => {
         stopBtn: isStopBtn(btn),
         btnGlyph: rp ? "rect" : (path ? (path.getAttribute("d") || "").slice(0, 6) : "none"),
         reasoning: reasoningInProgress(lastAssistant()),
-        streamMax: _streamMax,
-        streamAgeMs: _streamAt ? Date.now() - _streamAt : -1,
+        streamMax: snap.maxLen,
+        streamAgeMs: snap.at ? Date.now() - snap.at : -1,
         grewGen: grewWithin(timings.GEN_IDLE_MS),
         grewReason: grewWithin(timings.REASON_IDLE_MS),
         gen: isGenerating(),
@@ -941,7 +925,7 @@ const ZSProvider = (() => {
     return ref ? { parent, ref } : null;
   }
 
-  return {
+  return B.createProvider({
     sendRetryLimit: 1,
     id: "deepseek",
     displayName: "DeepSeek",
@@ -979,5 +963,5 @@ const ZSProvider = (() => {
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,
-  };
+  });
 })();

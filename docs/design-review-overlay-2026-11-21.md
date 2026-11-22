@@ -36,35 +36,29 @@ None.
 
 ## Improvements
 
-- **High — light-appearance link colour fails contrast.** `.zs-site-go` is set
-  to `#9ca3af` on the light surface `#fffef0`, which computes to **2.50:1**.
-  HIG guidance requires 4.5:1 for text up to 17 pt
-  (`accessibility.md › Vision`, "Strive to meet color contrast minimum
-  standards"; `typography.md › Ensuring legibility`). Nearby light-theme values
-  already clear the bar: `#6b7280` = 4.76:1, `#1d4ed8` = 6.60:1. **Fix:** set
-  `html.zs-light .zs-site-go { color: #1d4ed8; }` (6.60:1), matching the
-  adjacent `#1d4ed8` gear and badge colours so one colour keeps one meaning.
-- **Medium — reduced-motion fallback freezes the orbit at a bright angle.**
-  The `@media (prefers-reduced-motion: reduce)` block sets
-  `#zs-composer-glow::before { animation: none; opacity: .55; }`, leaving a
-  static bright arc. HIG says motion must be optional and never the only
-  carrier of meaning (`motion.md › Best practices`, "Make motion optional"),
-  which the Stop button satisfies; however a static arc still reads as a
-  permanent decoration. **Fix:** set `opacity: 0` under reduced motion and rely
-  on the Stop button and status text alone for state.
-- **Medium — strong blur on a small, frequently visible bar.** The bar uses
-  `backdrop-filter: blur(24px) saturate(1.3)`. HIG permits translucency on the
-  functional layer (`color.md › Liquid Glass color`, "Apply color sparingly to
-  the Liquid Glass material") but warns against overpowering nearby content.
-  24 px blur plus saturation is heavier than the restrained hairline used
-  elsewhere. **Fix:** reduce to `blur(12px) saturate(1.15)` and keep the 1 px
-  hairline as the edge cue; verify legibility over the lightest provider themes.
-- **Low — the amber warning pill keeps a warm border on the new blue face.**
-  `#zs-unstable` now uses blue text (`#60a5fa`) but retains
-  `border: 1px solid rgba(251, 191, 36, 0.4)` and a warm hover background.
-  `color.md › Best practices` says "Avoid using the same color to mean
-  different things"; a half-converted pill muddies the meaning. **Fix:** switch
-  border and hover to the blue-family values already used by the menu.
+All four findings below were implemented in Fase 2D and re-verified / consolidated into the semantic & per-provider token system in Fase 4 (2026-11-22):
+
+- [x] **High — light-appearance link colour fails contrast.** **Resolved.**
+  `snapgent-extension/overlay.css` sets `html.zs-light .zs-site-go { color: var(--zs-accent); }`
+  where the light default `--zs-accent` is `#1d4ed8` (6.60:1 on `#fffef0`, 6.30:1
+  on `#f5f8ff`), and every per-provider light `--zs-accent` clears WCAG AA (>= 4.5:1).
+  Also fixed light-mode `.zs-site-host` from `#9ca3af` to `var(--zs-content-muted)`
+  (`#475569` default, >= 7:1). Verified by `tests/test_overlay_responsive.py`.
+- [x] **Medium — reduced-motion fallback freezes the orbit at a bright angle.** **Resolved.**
+  `snapgent-extension/overlay.css` `@media (prefers-reduced-motion: reduce)` sets
+  `#zs-composer-glow::before { animation: none; opacity: 0; }` and disables animations
+  and transitions on `.zs-chip.run`, `.zs-spin`, `#zs-bar`, `.zs-chip`, and
+  `#zs-composer-glow`. Verified by `tests/test_overlay_responsive.py`.
+- [x] **Medium — strong blur on a small, frequently visible bar.** **Resolved.**
+  `snapgent-extension/overlay.css` `#zs-bar` uses
+  `backdrop-filter: blur(12px) saturate(1.15)` (and `-webkit-backdrop-filter` + `--zs-bar-backdrop`)
+  instead of `blur(24px) saturate(1.3)`. Verified by `tests/test_overlay_responsive.py`.
+- [x] **Low — the amber warning pill keeps a warm border on the new blue face.** **Resolved.**
+  `snapgent-extension/overlay.css` `#zs-unstable` now uses token-driven accent-family
+  colours (`color: var(--zs-accent-soft)`, `border: 1px solid var(--zs-pill-border)`,
+  `background: var(--zs-surface)`, hover `var(--zs-pill-hover-bg)`), removing all
+  amber (`rgba(251, 191, 36, ...)`) border and warm hover values. Verified by
+  `tests/test_overlay_responsive.py`.
 
 ## Craft notes
 
@@ -114,9 +108,15 @@ None.
   macOS default control size is 28 pt with a 20 pt minimum
   (`accessibility.md › Mobility`). Confirm the rendered value with a browser
   measurement — source review cannot prove the final hit region.
-- The Electron mirror shares the same stylesheet, so any fix here must be
-  copied to `snapgent-app/extension/overlay.css`; the repository test
-  `test_overlay_copies_are_identical` enforces this.
-- Visual verification on all four providers (Rudder, Ptero, Gemini, DeepSeek)
-  and the post-reload appearance still require a live browser; this review
-  cannot substitute for that check.
+- `tests/test_overlay_responsive.py::test_overlay_copies_are_identical` enforces
+  that every `overlay.css` copy in the repository stays byte-identical to
+  `snapgent-extension/overlay.css` (in `webmcp`, `snapgent-extension/overlay.css`
+  is the single canonical copy; if `snapgent-app/extension/overlay.css` is present,
+  it is checked automatically).
+- Fase 4 (2026-11-22) added per-provider CSS token sets (dark + light) for
+  Gemini, DeepSeek, Rudder, Ptero, Claude, and chat.z.ai (`glm`), documented in
+  `snapgent-extension/DESIGN.md`, plus a `#zs-*` / `.zs-*` CSS isolation barrier
+  in `snapgent-extension/overlay.css`.
+- **Pending manual verification:** Live visual verification on all six sites
+  (Gemini, DeepSeek, Rudder, Ptero, Claude, chat.z.ai) after reloading the
+  extension still requires a real browser session.

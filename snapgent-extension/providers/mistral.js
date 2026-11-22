@@ -4,15 +4,15 @@
 // eslint-disable-next-line no-unused-vars
 const ZSProvider = (() => {
   "use strict";
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const B = ZSProviderBase;
+  const sleep = B.sleep;
+  const visible = B.visible;
+  const excluded = B.notOverlay;
+  const waitFor = B.waitFor;
+  const idTracker = B.createWeakIdTracker("mistral-");
   let diag = () => {};
   let missingEditorSince = 0;
   let lockedEditor = null;
-  let sampledItem = null;
-  let sampledLen = 0;
-  let grewAt = 0;
-  const ids = new WeakMap();
-  let nextId = 0;
 
   const S = {
     user: '[data-message-author-role="user"],[data-testid*="user-message"],[data-testid*="user-turn"],[data-role="user"]',
@@ -38,8 +38,7 @@ const ZSProvider = (() => {
     STABLE_MS: 10000,
     RESPONSE_TIMEOUT_MS: 300000,
   };
-  const visible = (el) => !!el && el.isConnected && el.getClientRects().length > 0;
-  const excluded = (el) => !el.closest("#zs-root");
+  // visible & excluded inherited from ZSProviderBase.
   const isUserItem = (item) => !!item && item.matches(S.user);
   const isAssistantItem = (item) => !!item && item.matches(S.assistant);
   const allItems = () => [...document.querySelectorAll(`${S.user},${S.assistant}`)]
@@ -105,28 +104,14 @@ const ZSProvider = (() => {
   // growing reasoning IS the growth signal that keeps isGenerating() true until
   // the answer text starts arriving.
   const streamText = (item) => textWithout(bodyOf(item));
-  const streamLen = (item) => streamText(item === undefined ? lastAssistant() : item).length;
+  const stream = B.createStreamTracker(streamText, lastAssistant, { minGrow: 0 });
+  const streamLen = stream.streamLen;
   const lastAssistantId = () => {
     const item = lastAssistant();
     if (!item) return null;
     const id = item.getAttribute("data-message-id") || item.getAttribute("data-messageid") || item.id;
-    if (id) return id;
-    if (!ids.has(item)) ids.set(item, ++nextId);
-    return ids.get(item);
+    return id || idTracker.idOf(item);
   };
-  function sampleStream() {
-    const item = lastAssistant();
-    const length = streamLen(item);
-    const now = Date.now();
-    if (item !== sampledItem || length < sampledLen - 400) {
-      sampledItem = item;
-      sampledLen = length;
-      grewAt = now;
-    } else if (length > sampledLen) {
-      sampledLen = length;
-      grewAt = now;
-    }
-  }
 
   const form = () => {
     const editor = getEditor();
@@ -156,10 +141,9 @@ const ZSProvider = (() => {
   };
   const isHardGenerating = () => !!stopButton();
   const isGenerating = () => {
-    sampleStream();
-    return isHardGenerating() || (sampledLen > 0 && Date.now() - grewAt < timings.GEN_IDLE_MS);
+    stream.sampleStream();
+    return isHardGenerating() || stream.grewWithin(timings.GEN_IDLE_MS);
   };
-  const isBusyNow = isGenerating;
 
   function snapshot() {
     const think = lastAssistant();
@@ -178,14 +162,7 @@ const ZSProvider = (() => {
       item,
     };
   }
-  async function waitFor(predicate, timeout) {
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
-      if (predicate()) return true;
-      await sleep(120);
-    }
-    return false;
-  }
+  // waitFor inherited from ZSProviderBase.
 
   function setInputLock(on) {
     const editor = on ? getEditor() : (lockedEditor || getEditor());
@@ -288,60 +265,17 @@ const ZSProvider = (() => {
     missingEditorSince = 0;
     return null;
   }
-  const isTooLongMsg = (text) => /conversation.{0,30}(too long|limit)|context.{0,20}limit/i.test(text);
-  const isBusyMsg = (text) => /try again later|temporarily unavailable|rate limit|too many requests/i.test(text);
-  const turnHalted = () => false;
-  const findContinueBtn = () => null;
-  const clickContinueBtn = () => false;
+  // isTooLongMsg, isBusyMsg, turnHalted, findContinueBtn, clickContinueBtn inherited from ZSProviderBase.
   const conversationKey = () =>
     location.pathname === "/" || location.pathname === "/chat" || location.pathname === "/code" || location.pathname === "/code/"
       ? "" : `mistral:${location.pathname}`;
 
-  function installSendHooks(handlers) {
-    document.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
-      const editor = getEditor();
-      if (!editor || !(editor === event.target || editor.contains(event.target)) ||
-          !editorText().trim() || handlers.isBlocked()) return;
-      if (!handlers.isStarted()) {
-        if (chatIsEmpty()) handlers.onBlockedAttempt();
-        return;
-      }
-      handlers.onUserMessage(assistantCount());
-    }, true);
-    document.addEventListener("click", (event) => {
-      const target = event.target;
-      const button = target && target.closest ? target.closest("button,[role='button']") : null;
-      if (!button || !getEditor()) return;
-      if (stopButton() === button) {
-        handlers.onNativeStop();
-        return;
-      }
-      if (sendButton() !== button || button.disabled ||
-          button.getAttribute("aria-disabled") === "true" || handlers.isBlocked()) return;
-      if (!handlers.isStarted()) {
-        if (chatIsEmpty()) handlers.onBlockedAttempt();
-        return;
-      }
-      handlers.onUserMessage(assistantCount());
-    }, true);
-  }
+  const installSendHooks = B.installStandardSendHooks({
+    getEditor, editorText, chatIsEmpty, assistantCount, sendButton, stopButton,
+  });
+  const findToolBlockSpot = (item) => B.findToolBlockSpot(item);
 
-  const commandShape = /"(?:command|tool)"\s*:\s*"|###\s*(?:lua|mcp_tool)/i;
-  function findToolBlockSpot(item) {
-    let found = null;
-    item.querySelectorAll("pre,code,p,li").forEach((el) => {
-      if (el.closest(".zs-chip, .zs-tool-hide")) return;
-      const text = (el.textContent || "").trim();
-      if (text && commandShape.test(text)) {
-        el.classList.add("zs-tool-hide");
-        found = found || { parent: el.parentElement, ref: el };
-      }
-    });
-    return found;
-  }
-
-  return {
+  return B.createProvider({
     id: "mistral",
     displayName: "Mistral",
     sendRetryLimit: 1,
@@ -355,12 +289,11 @@ const ZSProvider = (() => {
     streamLen, snapshot,
     getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barAnchor,
     setInputLock, typeAndSend, stopGeneration,
-    isGenerating, isBusyNow, isHardGenerating,
+    isGenerating, isHardGenerating,
     enforceComposer, ensureComposerReady,
-    turnHalted, findContinueBtn, clickContinueBtn,
-    scanError, isTooLongMsg, isBusyMsg,
+    scanError,
     attachImages: () => false,
     clearAttachments: () => {},
     conversationKey, installSendHooks, findToolBlockSpot,
-  };
+  });
 })();

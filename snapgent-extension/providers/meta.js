@@ -40,7 +40,8 @@
 // eslint-disable-next-line no-unused-vars
 const ZSProvider = (() => {
   "use strict";
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const B = ZSProviderBase;
+  const sleep = B.sleep;
   let diag = () => {}; // injected by core via init()
   // Identity of the last image set STAGED into the composer. The core reuses the
   // same array reference across submitAndGetBase's typeAndSend retries, so keying
@@ -181,15 +182,8 @@ const ZSProvider = (() => {
   // Stable per-NODE id for the latest assistant turn (the core prefers this over
   // count-based detection). A WeakMap assigns each turn a monotonic id on first
   // sight, so a genuinely new reply node yields a new id immediately.
-  const _idMap = new WeakMap();
-  let _idSeq = 0;
-  function lastAssistantId() {
-    const it = lastAssistant();
-    if (!it) return null;
-    let id = _idMap.get(it);
-    if (!id) { id = ++_idSeq; _idMap.set(it, id); }
-    return id;
-  }
+  const _idTracker = B.createWeakIdTracker("meta-");
+  const lastAssistantId = () => _idTracker.lastId(lastAssistant);
 
   const chatIsEmpty = () => allItems().length === 0;
 
@@ -415,32 +409,13 @@ const ZSProvider = (() => {
     const b = bodyOf(item);
     return b ? textWithout(b, ".zs-chip") : "";
   }
-  const streamLen = (item) => streamText(item === undefined ? lastAssistant() : item).length;
-
-  let _streamMax = -1, _streamAt = 0, _streamItem = null;
-  function sampleStream() {
-    const item = lastAssistant();
-    const len = streamText(item).length;
-    const now = Date.now();
-    if (item !== _streamItem || len < _streamMax - 400) {
-      _streamItem = item; _streamMax = len; _streamAt = now; return;
-    }
-    if (len > _streamMax) { _streamMax = len; _streamAt = now; }
-  }
-  const grewWithin = (ms) => _streamMax > 1 && Date.now() - _streamAt < ms;
+  const _stream = B.createStreamTracker(streamText, lastAssistant, { minGrow: 1 });
+  const streamLen = _stream.streamLen;
 
   function genActive() {
-    sampleStream();
-    // The stop button is Meta's authoritative "still working" signal and stays up
-    // through the ENTIRE Réflexion reasoning phase (which can run minutes, sometimes
-    // with a stray reply fragment emitted BEFORE the reasoning even starts). Trust it
-    // outright: present = generating, no timer cap. When it is gone, fall back to the
-    // stream-growth idle window. Previously genActive only trusted the button for a
-    // 10s growth window, so a long reasoning phase read as "generation ended" ~40s
-    // early, the loop abandoned the turn, lastGenAt went stale, and the eventual
-    // command landed orphaned ("not run").
+    _stream.sampleStream();
     if (stopButton()) return true;
-    return grewWithin(timings.GEN_IDLE_MS);
+    return _stream.grewWithin(timings.GEN_IDLE_MS);
   }
   const isGenerating = genActive;
   const isBusyNow = genActive;
@@ -805,7 +780,7 @@ const ZSProvider = (() => {
     return hidAny;
   }
 
-  return {
+  return B.createProvider({
     id: "meta",
     displayName: "Meta AI",
     // Meta's composer accepts image uploads (hidden multi-file input → inline
@@ -845,5 +820,5 @@ const ZSProvider = (() => {
     scanError, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, conversationKey, installSendHooks, findToolBlockSpot,
-  };
+  });
 })();

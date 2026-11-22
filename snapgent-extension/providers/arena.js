@@ -27,7 +27,8 @@
 // eslint-disable-next-line no-unused-vars
 const ZSProvider = (() => {
   "use strict";
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const B = ZSProviderBase;
+  const sleep = B.sleep;
   let diag = () => {}; // injected by core via init()
   // Identity of the last image set we STAGED into the composer. The core reuses
   // the same array reference across submitAndGetBase's up-to-4 typeAndSend
@@ -251,15 +252,8 @@ const ZSProvider = (() => {
   // back to counts and waited out the full 30s NO_TURN_GRACE after every battle.
   // A WeakMap assigns each turn element a monotonic id the first time it's seen;
   // a genuinely new reply node therefore yields a new id immediately.
-  const _idMap = new WeakMap();
-  let _idSeq = 0;
-  function lastAssistantId() {
-    const it = lastAssistant();
-    if (!it) return null;
-    let id = _idMap.get(it);
-    if (!id) { id = ++_idSeq; _idMap.set(it, id); }
-    return id;
-  }
+  const _idTracker = B.createWeakIdTracker("arena-");
+  const lastAssistantId = () => _idTracker.lastId(lastAssistant);
 
   const chatIsEmpty = () => allItems().length === 0;
   // A genuinely fresh chat: the /text/* route with the composer rendered and no
@@ -324,35 +318,23 @@ const ZSProvider = (() => {
     const md = proseOf(item);
     return md ? textWithout(md, ".zs-chip") : "";
   }
-  const streamLen = (item) => streamText(item === undefined ? lastAssistant() : item).length;
-
-  let _streamMax = -1, _streamAt = 0, _streamItem = null;
-  function sampleStream() {
-    const item = lastAssistant();
-    const len = streamText(item).length;
-    const now = Date.now();
-    if (item !== _streamItem || len < _streamMax - 400) {
-      _streamItem = item; _streamMax = len; _streamAt = now; return;
-    }
-    if (len > _streamMax) { _streamMax = len; _streamAt = now; }
-  }
-  const grewWithin = (ms) => _streamMax > 1 && Date.now() - _streamAt < ms;
+  const _stream = B.createStreamTracker(streamText, lastAssistant, { minGrow: 1 });
+  const streamLen = _stream.streamLen;
 
   const WEDGE_MS = 10000;
   let _stopSince = 0;
   function genActive() {
-    sampleStream();
+    const snap = _stream.sampleStream();
     const stop = !!stopButton();
     const now = Date.now();
     if (stop) {
       if (!_stopSince) _stopSince = now;
-      return (now - _streamAt < WEDGE_MS) || (now - _stopSince < 2000);
+      return (now - snap.at < WEDGE_MS) || (now - _stopSince < 2000);
     }
     _stopSince = 0;
-    return grewWithin(timings.GEN_IDLE_MS);
+    return _stream.grewWithin(timings.GEN_IDLE_MS);
   }
   const isGenerating = genActive;
-  const isBusyNow = genActive;
   const isHardGenerating = () => !!stopButton();
 
   // Arena exposes no reliable per-turn "stopped" marker → never halted; and no
@@ -519,21 +501,26 @@ const ZSProvider = (() => {
   // (the loop halted, but the model kept streaming a turn). Click now if present;
   // otherwise poll briefly and click the instant the button appears, so the stop
   // is never swallowed by that gap.
-  let _stopPoll = null;
+  let _stopWatcher = null;
+  let _stopDeadline = null;
   function stopGeneration() {
-    if (_stopPoll) { clearInterval(_stopPoll); _stopPoll = null; }
-    const b = stopButton();
-    if (b) { try { b.click(); } catch {} return; }
-    const t0 = Date.now();
-    _stopPoll = setInterval(() => {
+    if (_stopWatcher) { _stopWatcher.disconnect(); _stopWatcher = null; }
+    clearTimeout(_stopDeadline);
+    _stopDeadline = null;
+    const clickIfPresent = () => {
       const btn = stopButton();
-      if (btn) { try { btn.click(); } catch {} clearInterval(_stopPoll); _stopPoll = null; return; }
-      // Hard cap so the timer never lingers (a fresh Stop click restarts it). We
-      // do NOT gate on genActive() here: during the pre-stream "Generating…" gap
-      // there's no stop button AND no grown text yet, so genActive() is false -
-      // the very window we must keep polling through.
-      if (Date.now() - t0 > 8000) { clearInterval(_stopPoll); _stopPoll = null; }
-    }, 120);
+      if (!btn) return false;
+      try { btn.click(); } catch {}
+      return true;
+    };
+    if (clickIfPresent()) return;
+    const done = () => {
+      if (_stopWatcher) { _stopWatcher.disconnect(); _stopWatcher = null; }
+      clearTimeout(_stopDeadline);
+      _stopDeadline = null;
+    };
+    _stopWatcher = B.watchDom(() => { if (clickIfPresent()) done(); }, { debounceMs: 50, attributes: true });
+    _stopDeadline = setTimeout(done, 8000);
   }
 
   // ── Chat-mode gate (Direct only) ──────────────────────────────────────────
@@ -895,7 +882,7 @@ const ZSProvider = (() => {
     return hidAny;
   }
 
-  return {
+  return B.createProvider({
     id: "arena",
     displayName: "Arena",
     // Arena's chat composer accepts image uploads (hidden `input[type=file]` in
@@ -934,12 +921,12 @@ const ZSProvider = (() => {
     // composer / state
     getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barAnchor,
     setInputLock, typeAndSend, stopGeneration,
-    isGenerating, isBusyNow, isHardGenerating,
+    isGenerating, isHardGenerating,
     enforceComposer, ensureComposerReady, modeWarning, captchaPresent, overlayBlocking,
     turnHalted, findContinueBtn, clickContinueBtn,
     scanError, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,
-  };
+  });
 })();

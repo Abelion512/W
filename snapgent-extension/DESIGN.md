@@ -3,7 +3,9 @@
 ## Thesis
 
 A quiet control rail fused to the host site's composer — one band that says
-"this chat is wired to your workspace" without taking over the page. The single remembered element is the **quiet hairline** that circles that band.
+"this chat is wired to your workspace" without taking over the page. Each host
+site gets its own colour, border, radius, and font tokens so the overlay blends
+into the page rather than sitting on top as a foreign widget.
 
 ## Scope
 
@@ -12,28 +14,36 @@ chat sites. Apple HIG applies as principles and foundations (accessibility,
 color, typography, layout, writing), not as iOS/macOS platform conventions.
 See `references/cross-platform.md` in the apple-design skill for vocabulary.
 
-The artifact: `#zs-bar` (status + Start/Stop + MCP target + site switch) and
-`#zs-composer-glow` (the ring). Source: `core/main.js` (`placeBar`,
-`showStop`, `build`), `providers/*.js` (`barMount`, `barAnchor`,
-`composerFrame`), `overlay.css`.
+The artifact: `#zs-bar` (status + Start/Stop + MCP target + site switch),
+`#zs-composer-glow` (the ring), `#zs-menu`, `#zs-target-menu`, `#zs-mcp-pop`,
+`#zs-setup`, `#zs-unstable`, and `.zs-chip`. Source: `core/ui-controller.js`
+(`placeBar`, `showStop`, `build`, `applyTheme`), `providers/*.js` (`barMount`,
+`barAnchor`, `composerFrame`), `overlay.css`.
 
-## Color tokens
+## Base color tokens
 
 One meaning per color. Accent is reserved for the primary action and focus;
-state colors never double as decoration.
+state colors never double as decoration. Base defaults live on `:root, #zs-root,
+#zs-input-cover` (dark) and `html.zs-light` (light).
 
-| Role | Dark | Light | Used for |
+| Token | Dark default | Light default | Used for |
 |---|---|---|---|
-| surface | `#0b1220` | `#f5f8ff` | bar / menu fill |
-| content | `#e8eef8` | `#14213a` | primary text |
-| accent | `#2563eb` | `#1d4ed8` | Start, focus ring |
-| accent-soft | `#60a5fa` | `#60a5fa` | labels on dark surface |
-| signal-done | `#34d399` | `#047857` | completed chip |
-| signal-error | `#f87171` | `#b91c1c` | failed chip |
-| signal-neutral | `#94a3b8` | `#475569` | result / sys chip |
-| hairline | `rgba(255,255,255,.14)` | `rgba(15,23,42,.14)` | separators |
+| `--zs-surface` | `#0b1220` | `#f5f8ff` | opaque bar / chip / warning fill |
+| `--zs-bar-bg` | `rgba(11, 18, 32, 0.82)` | `rgba(245, 248, 255, 0.93)` | floating bar fill |
+| `--zs-menu-bg` | `#0b1220` | `#f5f8ff` | Switch AI & MCP popovers |
+| `--zs-content` | `#e8eef8` | `#14213a` | primary text |
+| `--zs-content-muted` | `#93a5bd` | `#475569` | secondary labels & hostnames |
+| `--zs-accent` | `#2563eb` | `#1d4ed8` | Start, Stop, active focus, light links |
+| `--zs-accent-soft` | `#60a5fa` | `#1d4ed8` | badges, icons, hover arrows |
+| `--zs-pill-bg` | `rgba(96, 165, 250, 0.08)` | `rgba(29, 78, 216, 0.07)` | target & switch pill fill |
+| `--zs-pill-border` | `rgba(96, 165, 250, 0.55)` | `rgba(37, 99, 235, 0.45)` | pill, menu, and warning borders |
+| `--zs-signal-done` | `#34d399` | `#047857` | completed chip / active status |
+| `--zs-signal-error` | `#f87171` | `#b91c1c` | failed chip / warning status |
+| `--zs-signal-neutral` | `#94a3b8` | `#475569` | neutral / idle chip |
+| `--zs-hairline` | `rgba(255, 255, 255, 0.14)` | `rgba(15, 23, 42, 0.14)` | outer bar / card border |
+| `--zs-divider` | `rgba(255, 255, 255, 0.08)` | `rgba(15, 23, 42, 0.09)` | inline/anchored bottom seam & menu dividers |
 
-Contrast against surface (computed, WCAG):
+Base contrast against surface (computed, WCAG AA >= 4.5:1):
 
 | Pair | Ratio |
 |---|---|
@@ -45,6 +55,41 @@ Contrast against surface (computed, WCAG):
 | `#ffffff` on `#2563eb` | 5.17:1 |
 | `#14213a` on `#f5f8ff` | 15.10:1 |
 | `#1d4ed8` on `#f5f8ff` | 6.30:1 |
+
+## Per-provider tokens
+
+`ui-controller.js` attaches `html.zs-site-<id>` on `<html>` and `.zs-prov-<id>`
+on `#zs-bar`. Each primary site overrides **only tokens** (colors, borders,
+radius, font stack, weight) in `overlay.css` — never ad-hoc per-element rules.
+
+| Site (`id`) | Host | Font stack (`--zs-font-ui`) | Radius (`--zs-bar-radius`) | Dark surface / accent / hairline | Light surface / accent / hairline |
+|---|---|---|---|---|---|
+| **Gemini** (`gemini`) | `gemini.google.com` | `"Google Sans Text", "Google Sans", Roboto, ...` (strong weight `500`) | `--zs-r-2xl` (14 px) | `#1e1f20` / `#1a73e8` (`#a8c7fa` soft) / `rgba(255,255,255,0.12)` | `#f0f4f9` / `#1a73e8` / `rgba(68,71,70,0.18)` |
+| **DeepSeek** (`deepseek`) | `chat.deepseek.com` | `Inter, -apple-system, ...` | `--zs-r-2xl` (14 px) | `#212327` / `#3b5bdb` (`#8ea4ff` soft) / `rgba(255,255,255,0.11)` | `#f5f7fb` / `#3b5bdb` / `rgba(28,32,41,0.14)` |
+| **Rudder** (`rudder`) | `rudder.chat` | `"Geist", Inter, -apple-system, ...` | `--zs-r-lg` (12 px) | `#18181b` / `#2563eb` (`#60a5fa` soft) / `rgba(255,255,255,0.12)` | `#f8fafc` / `#1d4ed8` / `rgba(15,23,42,0.13)` |
+| **Ptero** (`ptero`) | `ptero.pro` | `"Plus Jakarta Sans", Inter, -apple-system, ...` | `--zs-r-lg` (12 px) | `#14161b` / `#4f46e5` (`#818cf8` soft) / `rgba(255,255,255,0.12)` | `#f6f7fb` / `#4338ca` / `rgba(24,28,38,0.13)` |
+| **Claude** (`claude`) | `claude.ai` | `"Anthropic Sans", "Styrene B", ui-sans-serif, ...` (strong weight `600`) | `--zs-r-2xl` (14 px) | `#2b2a27` / `#b55436` (`#e89275` soft) / `rgba(238,236,226,0.13)` | `#faf9f5` / `#a84a2d` / `rgba(28,27,24,0.14)` |
+| **chat.z.ai / GLM** (`glm`) | `chat.z.ai` | `Inter, "HarmonyOS Sans", -apple-system, ...` | `--zs-r-2xl` (14 px) | `#1b1c1f` / `#0369a1` (`#7dd3fc` soft) / `rgba(255,255,255,0.11)` | `#f7f8fa` / `#0369a1` / `rgba(24,26,31,0.13)` |
+
+## CSS isolation
+
+Because inline mode mounts `#zs-bar` directly inside host composer trees (and
+`.zs-chip` inside conversation turns), `overlay.css` enforces consistent
+`#zs-*` / `.zs-*` prefix scoping plus an explicit isolation barrier on every
+overlay root (`#zs-root`, `#zs-bar`, `#zs-menu`, `#zs-target-menu`,
+`#zs-mcp-pop`, `#zs-setup`, `#zs-input-cover`, `#zs-unstable`, `.zs-chip`,
+`.zs-toast`, `.zs-banner`, `.zs-shot`):
+
+- `isolation: isolate` creates an independent stacking context per overlay root.
+- `box-sizing: border-box` is enforced on every root and descendant (`*`,
+  `*::before`, `*::after`).
+- Inherited typography (`font-family`, `font-style`, `font-variant`,
+  `font-weight`, `line-height`, `letter-spacing`, `word-spacing`,
+  `text-transform`, `text-indent`, `text-shadow`, `text-align`,
+  `text-decoration`) is reset on every root so host global rules (Tailwind
+  Preflight, Angular Material, Ant Design, Svelte prose) cannot bleed in.
+- Buttons and SVGs inside overlay roots reset `appearance`, `margin`, and
+  `display` explicitly.
 
 ## Type scale
 
@@ -63,38 +108,34 @@ weights: 500 / 600 / 700
 |---|---|---|---|
 | `inline` + `inside` | DeepSeek | first child inside the composer card | bar + full composer card |
 | `inline` | Gemini, Claude | in-flow sibling above composer in flex column | bar + composer frame |
-| `anchored` | Rudder, Ptero, Kimi, Qwen, Meta, Mistral | fixed, hugging composer top edge | bar + composer frame |
+| `anchored` | Rudder, Ptero, GLM (`chat.z.ai`), Kimi, Qwen, Meta, Mistral | fixed, hugging composer top edge | bar + composer frame |
 | fallback | any without anchors | fixed above composer | composer frame |
 
 Rules enforced in `placeBar()`:
 
 - `BAR_GAP = 2` — the bar sits flush to the composer.
 - When in-flow, bar width and left edge are set from the composer rect so the
-  two align exactly (Gemini: both `left:16`, `width:698`).
+  two align exactly.
 - When unified, the bar borrows `opaqueBg(composerFrame)`, drops bottom radius
-  and bottom border, and keeps top corners at `--zs-r-xl`.
-- In `inside` mode the ring uses the editor rect, not the full composer card —
-  otherwise DeepSeek's mode buttons widen the ring beyond bar + input.
+  with a subtle `--zs-divider` seam, and keeps top corners at `--zs-bar-radius`.
 - Ring radius comes from the composer, clamped: `max(18px, min(radius,24px))`.
 
 ## Material and motion
 
-- Bar: `blur(24px) saturate(1.3)`, translucent neutral fill, one hairline.
-  Glass belongs only to this functional layer, never to chips or content.
+- Bar: `blur(12px) saturate(1.15)` (`--zs-bar-backdrop`), translucent neutral
+  fill (`--zs-bar-bg`), one hairline (`--zs-hairline`). Glass belongs only to
+  this functional layer, never to chips or content.
 - `#zs-composer-glow`: pointer-events none, positioned around the union of bar
-  and composer. It is a single 1 px `box-shadow` ring — white in dark, blue in
-  light. No animation, no mask, no conic gradient. The design target is the
-  lightest possible runtime cost; motion was deliberately removed.
+  and composer. Single 1 px `box-shadow` ring (`--zs-ring-shadow`). No
+  animation, no mask, no conic gradient.
 
 ## Accessibility
 
-- `@media (prefers-reduced-motion: reduce)` stops the orbit and shimmer; a
-  static highlight stays at opacity `.85`.
-- `@media (prefers-reduced-transparency: reduce)` makes the bar opaque.
-- `@media (prefers-contrast: more)` strengthens ring and border to 2 px.
-- The host page may force these. `--force-prefers-reduced-motion` in the
-  browser command line makes `matchMedia` report reduce even with no visible
-  settings toggle.
+- `@media (prefers-reduced-motion: reduce)` stops all animations and
+  transitions and hides `#zs-composer-glow::before` (`opacity: 0`).
+- `@media (prefers-reduced-transparency: reduce)` makes the bar opaque
+  (`var(--zs-surface)` with `backdrop-filter: none`).
+- `@media (prefers-contrast: more)` strengthens bar border and ring to 2 px.
 - All controls keep text labels; icons are supplementary.
 
 ## Maintenance
@@ -102,16 +143,10 @@ Rules enforced in `placeBar()`:
 Never set a fixed input height. `.zs-typing` only caps runaway growth at 140 px
 during injection; the visible size comes from the host site.
 
-When a provider looks wrong, check in order:
-
-1. Does its adapter export `barMount`, `barAnchor`, `composerFrame`?
-2. Are bar and composer rects aligned (same left/width, gap < 24 px)?
-3. Is the ring sizing to the right target (editor for `inside` mode)?
-4. Is `prefers-reduced-motion` suppressing the orbit?
-
 Verify with:
 
 ```
-node --check snapgent-extension/core/main.js
+node --check snapgent-extension/core/ui-controller.js snapgent-extension/core/main.js
+python3 -m pytest -q
 python3 -m unittest discover -s tests
 ```
