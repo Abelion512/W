@@ -342,7 +342,13 @@
   // Every user meets this eventually - Chrome auto-updates extensions under
   // open tabs - so it is worth its own message.
   const isContextInvalidated = ZSChannel.isContextInvalidated;
-  const bg = (msg) => ZSChannel.send(msg);
+  const bg = (msg) => {
+    if (msg && msg.type === "call_tool" && !msg.promptId) {
+      const current = a2a && a2a.getCurrentId && a2a.getCurrentId();
+      if (current) msg = { ...msg, promptId: current };
+    }
+    return ZSChannel.send(msg);
+  };
 
   // 'subagent' is always blocked (long-running, hangs the loop). 'screen_capture'
   // is only blocked on providers whose underlying model can't see images
