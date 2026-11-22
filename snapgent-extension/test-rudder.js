@@ -317,7 +317,7 @@ sendButton._click = () => {
 };
 
 const P = new Function(
-  fs.readFileSync(__dirname + "/providers/rudder.js", "utf8") + "; return ZSProvider;"
+  fs.readFileSync(__dirname + "/providers/base.js", "utf8") + "\n" + fs.readFileSync(__dirname + "/providers/rudder.js", "utf8") + "; return ZSProvider;"
 )();
 
 const results = [];

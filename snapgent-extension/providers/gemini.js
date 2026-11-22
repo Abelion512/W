@@ -221,9 +221,70 @@ const ZSProvider = (() => {
   // frozen, forever. Trusting it blindly pinned isGenerating() permanently true,
   // which froze the loop (no send, no auto-resume, Stop button stuck on). So the
   // stop button is treated as "live" only while the stream is actually advancing
-  // (or it only just appeared - generation spinning up). Frozen past WEDGE_MS ⇒
-  // wedged ⇒ not generating.
-  const WEDGE_MS = 10000;
+  // (or Task Mode is visibly working, or it only just appeared - generation
+  // spinning up). Frozen past WEDGE_MS ⇒ wedged ⇒ not generating.
+  const WEDGE_MS = 30000;
+  const TASK_PROGRESS_SEL = '[role="progressbar"], mat-progress-bar, mat-progress-spinner, mat-spinner, progress';
+  const TASK_BUSY_SEL = '[aria-busy="true"]';
+  const TASK_STATUS_SEL = '[role="status"], [aria-live]';
+  const TASK_THINKING_RE = /thinking it through/i;
+  const DIALOG_SEL = '[role="dialog"], [role="alertdialog"], mat-dialog-container';
+  const CANCEL_DIALOG_RE = /cancel response generation|stop generating|cancel generation/i;
+
+  function isVisible(el) {
+    if (!el) return false;
+    if (el.closest && el.closest("#zs-root")) return false;
+    if (el.getAttribute && el.getAttribute("aria-hidden") === "true") return false;
+    if (el.offsetParent !== null && el.offsetParent !== undefined) return true;
+    // position:fixed overlays (e.g. Angular CDK dialogs) have offsetParent === null.
+    if (typeof el.getClientRects === "function") return el.getClientRects().length > 0;
+    try {
+      if (typeof getComputedStyle === "function") {
+        const st = getComputedStyle(el);
+        if (st && (st.display === "none" || st.visibility === "hidden")) return false;
+        if (st && st.position === "fixed") return true;
+      }
+    } catch {}
+    return el.offsetParent !== null;
+  }
+
+  // In Gemini Task Mode ("Thinking it through..." or Remote computer panel),
+  // <message-content> can stay quiet for >10s while the agent is actively
+  // working. Detect active Task Mode indicators so genActive() stays true and
+  // unwedgeStop() never clicks Stop mid-task.
+  function isTaskModeWorking() {
+    try {
+      for (const el of document.querySelectorAll(TASK_PROGRESS_SEL)) {
+        if (isVisible(el)) return true;
+      }
+      for (const el of document.querySelectorAll(TASK_BUSY_SEL)) {
+        if (isVisible(el)) return true;
+      }
+      const last = lastAssistant();
+      if (last && TASK_THINKING_RE.test(textWithout(last, S.reply))) {
+        return true;
+      }
+      for (const el of document.querySelectorAll(TASK_STATUS_SEL)) {
+        if (!isVisible(el)) continue;
+        if (el.closest && (el.closest(S.userItem) || el.closest(S.reply))) continue;
+        if (TASK_THINKING_RE.test(el.textContent || "")) return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  // Never click Stop while Gemini's "Cancel response generation?" confirmation
+  // dialog is already open.
+  function isCancelDialogOpen() {
+    try {
+      for (const el of document.querySelectorAll(DIALOG_SEL)) {
+        if (!isVisible(el)) continue;
+        if (CANCEL_DIALOG_RE.test(el.textContent || "")) return true;
+      }
+    } catch {}
+    return false;
+  }
+
   let _stopSince = 0;
   function genActive() {
     sampleStream();
@@ -231,6 +292,10 @@ const ZSProvider = (() => {
     const now = Date.now();
     if (stop) {
       if (!_stopSince) _stopSince = now;
+      if (isTaskModeWorking()) {
+        _streamAt = now;
+        return true;
+      }
       return (now - _streamAt < WEDGE_MS) || (now - _stopSince < 2000);
     }
     _stopSince = 0;
@@ -246,11 +311,21 @@ const ZSProvider = (() => {
   // appears, so typeAndSend can't send and the injected tool result is stranded
   // in the composer (seen live: send.click found:false x4 → "Message could not
   // be sent"). Clicking the frozen stop resets the composer to its idle state and
-  // arrow_upward reappears (validated live). Guarded by genActive so a genuinely
-  // live generation is NEVER aborted. Returns true if it clicked.
+  // arrow_upward reappears (validated live). Guarded by genActive, Task Mode
+  // detection, and cancel-dialog detection so a genuinely live generation is
+  // NEVER aborted. Returns true if it clicked.
   function unwedgeStop() {
     const stop = stopButton();
-    if (stop && !genActive()) {
+    if (!stop) return false;
+    if (isCancelDialogOpen()) {
+      diag("send.unwedgeSkip", { reason: "cancel_dialog" });
+      return false;
+    }
+    if (isTaskModeWorking()) {
+      diag("send.unwedgeSkip", { reason: "task_mode" });
+      return false;
+    }
+    if (!genActive()) {
       diag("send.unwedge", {});
       try { stop.click(); } catch {}
       return true;
@@ -741,5 +816,13 @@ const ZSProvider = (() => {
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,
+    __test: {
+      WEDGE_MS,
+      isTaskModeWorking,
+      isCancelDialogOpen,
+      unwedgeStop,
+      genActive,
+      resetStreamState: () => { _streamMax = -1; _streamAt = 0; _streamItem = null; _stopSince = 0; },
+    },
   };
 })();

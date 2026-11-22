@@ -176,9 +176,12 @@ the same handlers. Responses are always 1.0 shapes.
 
 ## Stream
 
-`SendStreamingMessage` returns `Content-Type: text/event-stream` and emits three
-`data:` events in order: the working task, the artifact, then the terminal
-status. Use `-N` so curl does not buffer.
+`SendStreamingMessage` returns `Content-Type: text/event-stream`. It emits the
+working `task` event first, zero or more incremental `artifactUpdate` chunk
+events while the web AI is generating (forwarded from extension `prompt_chunk`
+frames through `A2AServer.emit_chunk(task_id, text)` with `"append": true` and
+`"lastChunk": false`), then the final `artifactUpdate` and terminal
+`statusUpdate`. Use `-N` so curl does not buffer.
 
 ```
 curl -sN -X POST http://127.0.0.1:17614/ \
@@ -201,6 +204,8 @@ curl -sN -X POST http://127.0.0.1:17614/ \
 ```
 data: {"task": {"id": "task-1fdbb7eaddbf4bc0baa41c1f6df7d3cb", "contextId": "ctx-a631c17f26e24ce1a4bda6d30b88698b", "status": {"state": "TASK_STATE_WORKING", "timestamp": "2026-11-04T11:47:35.794425+00:00"}, "artifacts": [], "history": [{"messageId": "msg-3", "role": "ROLE_USER", "parts": [{"text": "List the files ..."}]}], "metadata": {}}}
 
+data: {"artifactUpdate": {"taskId": "task-1fdbb7eaddbf4bc0baa41c1f6df7d3cb", "contextId": "ctx-a631c17f26e24ce1a4bda6d30b88698b", "artifact": {"artifactId": "artifact-11112222333344445555666677778888", "name": "reply", "parts": [{"text": "Partial delta..."}]}, "append": true, "lastChunk": false, "index": 0}}
+
 data: {"artifactUpdate": {"taskId": "task-1fdbb7eaddbf4bc0baa41c1f6df7d3cb", "contextId": "ctx-a631c17f26e24ce1a4bda6d30b88698b", "artifact": {"artifactId": "artifact-73b658002c2b44bf80024774dcda9fd4", "name": "reply", "parts": [{"text": "..."}]}, "index": 0}}
 
 data: {"statusUpdate": {"taskId": "task-1fdbb7eaddbf4bc0baa41c1f6df7d3cb", "contextId": "ctx-a631c17f26e24ce1a4bda6d30b88698b", "status": {"state": "TASK_STATE_COMPLETED", "timestamp": "2026-11-04T11:47:35.794769+00:00", "message": {"messageId": "msg-f6aa88b9c0a84b328d66dafdb89d2ddf", "role": "ROLE_AGENT", "parts": [{"text": "..."}], "taskId": "task-1fdbb7eaddbf4bc0baa41c1f6df7d3cb", "contextId": "ctx-a631c17f26e24ce1a4bda6d30b88698b"}}}}
@@ -215,7 +220,8 @@ On failure the stream emits the same working-task event, then one
 | --- | --- | --- |
 | `ZS_A2A_PORT` | `17614` | HTTP listen port |
 | `ZS_A2A_TOKEN` | random | Bearer token; generated with `secrets.token_urlsafe(32)` and printed when unset |
-| `ZS_A2A_TIMEOUT_MS` | `600000` | Task timeout (10 min) |
+| `ZS_A2A_TIMEOUT_MS` | `1800000` | Task timeout in ms (30 min; capped per task by `metadata.timeoutMs`) |
+| `ZS_DISCONNECT_GRACE_SECONDS` | `15` | Seconds to hold in-flight prompts when the extension WebSocket drops briefly (for example during a Brave MV3 service worker restart); a reconnecting socket adopts the prompts so the A2A task does not fail |
 | `ZS_A2A_DISABLE` | unset | `1` skips starting the A2A server |
 
 Set them before `bash Linux_Start.sh`, for example:
@@ -231,6 +237,8 @@ ZS_A2A_PORT=19000 ZS_A2A_TOKEN=my-token bash Linux_Start.sh
 | `SendMessage` (`message/send`) | `SendMessageRequest` | `Task` |
 | `SendStreamingMessage` (`message/stream`) | `SendMessageRequest` | SSE stream |
 | `GetTask` (`tasks/get`) | `{id, historyLength}` | `Task` |
+| `CancelTask` (`tasks/cancel`) | `{id}` | `Task` (`TASK_STATE_CANCELED`) |
+| `Orchestrate` (`tasks/orchestrate`) | `{message, providers, metadata, configuration}` | `Task` |
 
 ## Errors
 
@@ -252,14 +260,14 @@ ZS_A2A_PORT=19000 ZS_A2A_TOKEN=my-token bash Linux_Start.sh
 - Binds `127.0.0.1` only. No remote access.
 - Bearer token required on every `POST /`. The endpoint drives a logged-in
   browser session and can write workspace files, so it is never unauthenticated.
-- Concurrency 1. All three methods funnel through `Bridge.submit_prompt`, which
-  serialises on an `asyncio.Lock`. A second task waits for the first.
-- The chat tab must be the **foreground tab** of its window. A backgrounded tab
-  pauses the loop.
-- Default task timeout 600 s (`ZS_A2A_TIMEOUT_MS`).
+- Per-provider concurrency: `Bridge.submit_prompt` holds one `asyncio.Lock` per
+  provider, so tasks pinned to different providers run in parallel while two
+  tasks for the same provider queue.
+- Default task timeout 1800 s (`ZS_A2A_TIMEOUT_MS`); reconnect grace window
+  15 s (`ZS_DISCONNECT_GRACE_SECONDS`).
 - No push notifications (`pushNotifications: false` in the card).
-- No task cancel. The extension cannot interrupt a generation cleanly, so
-  `tasks/cancel` is not implemented.
+- `tasks/cancel` marks the task `TASK_STATE_CANCELED` and forwards a
+  `cancel_prompt` frame to the extension so the active tab stops generating.
 - The extension websocket on `ws://127.0.0.1:17613` is not authenticated. The
   bridge sends a prompt to a single socket and accepts its reply only from that
   socket, but a local process that connects can still interfere. See the Risks
@@ -285,13 +293,25 @@ a2a_agents:
     auth:
       type: bearer
       token: "<contents of ~/.snapgent/a2a_token>"
-    timeout: 600
+    timeout: 1800
 ```
 
 `timeout` is in seconds and defaults to 120 in Hermes. Set it at or above
-`ZS_A2A_TIMEOUT_MS` (default 600000 ms); otherwise Hermes gives up on a slow
-provider while the task keeps running here. Then call `a2a_call` with
+`ZS_A2A_TIMEOUT_MS` (default 1800000 ms / 30 min); otherwise Hermes gives up on
+a slow provider while the task keeps running here. Then call `a2a_call` with
 `agent: webmcp`.
+
+**Hermes metadata gap.** The Hermes `a2a_call` plugin has been seen calling the
+server with no `metadata`, which drops provider and tier routing. Until that
+plugin is patched, pass metadata explicitly with the in-repo client:
+
+```
+python3 scripts/a2a_call.py "Review docs/a2a.md" --tier balanced --provider gemini
+```
+
+The helper always sends a `metadata` object (including `timeoutMs`) and accepts
+`--provider`, `--tier` and `--category`. It also exposes `tasks/cancel` and
+`tasks/orchestrate` through `--cancel` and `--orchestrate`.
 
 ### Other harnesses
 
@@ -337,6 +357,41 @@ with DeepThink and web Search on, and ChatGPT with Think on. Set the DeepSeek
 and ChatGPT modes in the site UI before starting the bridge. Gemini's adapter
 restores 4 Hydrogen + High at session startup; DeepSeek's adapter leaves Search
 as the user set it.
+
+## Fan-out
+
+`bridge.py` holds one queue lock per `metadata.provider`, not one global lock.
+Two tasks pinned to different providers run in parallel in their own chat tabs;
+two tasks for the same provider queue behind each other. Prompt ids own their
+result socket, so a reply from another tab cannot resolve a task. Enable
+`zsBackgroundSessions` (and reload the provider tabs) when fan-out runs while
+the harness tab is in front. The bridge still needs one extension socket, so
+the fan-out ceiling is the number of open provider tabs, not the number of
+HTTP callers.
+
+## Long tasks, cancel and orchestration
+
+- A single task can run for more than seven minutes. The default deadline is
+  30 minutes (`ZS_A2A_TIMEOUT_MS`, capped per task by `metadata.timeoutMs`).
+  `tasks/get` includes `status.progress.elapsedSeconds` while a task is
+  SUBMITTED or WORKING, so a poller can tell a live task from a dead one.
+- `tasks/cancel` (alias `CancelTask`) flips a live task to `TASK_STATE_CANCELED`,
+  invokes `on_cancel(task_id)` -> `Bridge.cancel_task()` -> a `cancel_prompt`
+  frame to the extension, and prevents any late bridge reply from overwriting
+  the canceled state. A terminal task cannot be canceled.
+- Reconnect grace: `build_a2a_server()` configures a 15-second grace window
+  (`ZS_DISCONNECT_GRACE_SECONDS`). If the extension WebSocket drops briefly
+  (such as a Brave MV3 service worker restart), in-flight prompts stay alive
+  and are re-adopted as soon as the extension reconnects.
+- `tasks/orchestrate` (alias `Orchestrate`) runs one prompt on several pinned
+  providers in parallel and returns the first successful reply. It takes
+  `params.providers` (2–8 names) and the same `message`/`metadata` as
+  `SendMessage`. It relies on the bridge's per-provider fan-out, so two
+  different providers use two different chat tabs.
+
+```
+python3 scripts/a2a_call.py "Summarize this" --orchestrate gemini,deepseek
+```
 
 ## Testing
 

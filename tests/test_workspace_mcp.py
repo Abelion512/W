@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -171,6 +172,48 @@ class WorkspaceMcpTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             workspace_mcp.run_command("echo", "hi")  # type: ignore[arg-type]
 
+    def test_run_command_rejects_out_of_root_paths(self):
+        # Traversal segments and an out-of-root executable must be refused
+        # before spawn. Absolute args are left to the mandatory bwrap sandbox
+        # (which masks host paths), so sandbox checks like `ls /home` still work.
+        with self.assertRaises(ValueError):
+            workspace_mcp.run_command("echo", ["../outside.txt"])
+        with self.assertRaises(ValueError):
+            workspace_mcp.run_command("/bin/echo", ["hi"])
+        # A bare name from PATH and a relative path inside the root are fine.
+        self.assertEqual(workspace_mcp.run_command("echo", ["ok"]), "ok")
+
+    def test_run_project_script_pyproject_fallback(self):
+        (self.workspace / "pyproject.toml").write_text(
+            '[tool.snapgent.scripts]\n'
+            'check = "python3 -m compileall -q ."\n',
+            encoding="utf-8",
+        )
+        with patch.object(workspace_mcp, "_run_process", return_value="ok") as run:
+            self.assertEqual(workspace_mcp.run_project_script("check"), "ok")
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:2], ["python3", "-m"])
+
+    def test_run_project_script_missing_manifest_is_explicit(self):
+        with self.assertRaises(FileNotFoundError) as ctx:
+            workspace_mcp.run_project_script("build")
+        self.assertIn("package.json", str(ctx.exception))
+
+    def test_run_tests_falls_back_to_unittest_without_pytest(self):
+        (self.workspace / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+        (self.workspace / "tests").mkdir()
+        with patch.object(workspace_mcp.importlib.util, "find_spec", return_value=None):
+            with patch.object(workspace_mcp, "_run_process", return_value="ok") as run:
+                self.assertEqual(workspace_mcp.run_tests(), "ok")
+        argv = run.call_args.args[0]
+        self.assertEqual(argv, [sys.executable, "-m", "unittest", "discover", "-s", "tests"])
+
+    def test_run_tests_uses_pytest_when_available(self):
+        (self.workspace / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+        with patch.object(workspace_mcp, "_run_process", return_value="ok") as run:
+            workspace_mcp.run_tests()
+        self.assertEqual(run.call_args.args[0], [sys.executable, "-m", "pytest"])
+
     def test_git_push_refuses_default_branch(self):
         with patch.object(
             workspace_mcp, "get_root", return_value=self.workspace
@@ -302,6 +345,20 @@ class WorkspaceMcpTests(unittest.TestCase):
         self.assertIn("--tmpfs", argv)
         # Secrets must not ride through: env is an explicit allowlist.
         self.assertLess(argv.index("--clearenv"), argv.index("--setenv"))
+
+    def test_fail_or_unsandboxed_helper(self):
+        with patch.dict("os.environ", {"ZS_ALLOW_UNSANDBOXED": "0"}, clear=False):
+            with self.assertRaises(RuntimeError) as ctx:
+                workspace_mcp._fail_or_unsandboxed(
+                    ["true"], "warn msg", "fatal reason."
+                )
+            self.assertIn("SECURITY FATAL: fatal reason.", str(ctx.exception))
+            self.assertIn("ZS_ALLOW_UNSANDBOXED=1", str(ctx.exception))
+        with patch.dict("os.environ", {"ZS_ALLOW_UNSANDBOXED": "1"}, clear=False):
+            self.assertEqual(
+                workspace_mcp._fail_or_unsandboxed(["true"], "warn msg", "fatal reason."),
+                ["true"],
+            )
 
 
 if __name__ == "__main__":

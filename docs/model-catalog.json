@@ -1,0 +1,223 @@
+{
+  "generatedAt": "2026-11-22T01:20:47.396335+00:00",
+  "source": "docs/WEB_AI_CAPABILITIES.md + open-tab titles (no prompts sent)",
+  "policy": {
+    "defaultTier": "balanced",
+    "autoTiers": [
+      "light",
+      "balanced"
+    ],
+    "neverAuto": [
+      "deep"
+    ],
+    "preferred": [
+      "deepseek",
+      "rudder",
+      "gemini",
+      "chatgpt",
+      "ptero",
+      "glm",
+      "qwen",
+      "mistral",
+      "meta",
+      "arena",
+      "grok"
+    ],
+    "effortLevels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "ultra"
+    ],
+    "note": "usage-friendly order first; Claude/Kimi/Grok use 5h/day/server-busy windows - explicit pin only"
+  },
+  "sources": {
+    "local": "docs/WEB_AI_CAPABILITIES.md + open-tab titles",
+    "intelligenceIndex": "https://artificialanalysis.ai/models",
+    "modelRegistry": "https://openrouter.ai/api/v1/models",
+    "opencode": "https://opencode.ai/docs/models/",
+    "webSearch": "Google search 'new model release <provider>'"
+  },
+  "models": [
+    {
+      "provider": "deepseek",
+      "model": "DeepThink",
+      "tier": "balanced",
+      "cost": "free",
+      "capabilities": [
+        "web",
+        "largeInput"
+      ],
+      "observedTitle": null
+    },
+    {
+      "provider": "gemini",
+      "model": "Hydrogen High",
+      "tier": "balanced",
+      "cost": "free",
+      "capabilities": [
+        "vision",
+        "web"
+      ],
+      "observedTitle": "Initializing MCP Tool Discovery - Google Gemini"
+    },
+    {
+      "provider": "glm",
+      "model": "GLM Max",
+      "tier": "balanced",
+      "cost": "free",
+      "capabilities": [
+        "vision"
+      ],
+      "observedTitle": null
+    },
+    {
+      "provider": "qwen",
+      "model": "Qwen3",
+      "tier": "balanced",
+      "cost": "free",
+      "capabilities": [
+        "largeInput"
+      ],
+      "observedTitle": null
+    },
+    {
+      "provider": "mistral",
+      "model": "Think",
+      "tier": "balanced",
+      "cost": "free",
+      "capabilities": [
+        "web"
+      ],
+      "observedTitle": null
+    },
+    {
+      "provider": "rudder",
+      "model": "plain chat",
+      "tier": "light",
+      "cost": "free",
+      "capabilities": [],
+      "observedTitle": null
+    },
+    {
+      "provider": "grok",
+      "model": "Fast / Research",
+      "tier": "balanced",
+      "cost": "free",
+      "capabilities": [
+        "web"
+      ],
+      "observedTitle": null
+    },
+    {
+      "provider": "claude",
+      "model": "Sonnet",
+      "tier": "deep",
+      "cost": "paid",
+      "capabilities": [],
+      "observedTitle": null
+    },
+    {
+      "provider": "chatgpt",
+      "model": "Think",
+      "tier": "deep",
+      "cost": "paid",
+      "capabilities": [
+        "web"
+      ],
+      "observedTitle": null
+    },
+    {
+      "provider": "kimi",
+      "model": "K3 Pro",
+      "tier": "deep",
+      "cost": "paid",
+      "capabilities": [
+        "vision"
+      ],
+      "observedTitle": null
+    },
+    {
+      "provider": "arena",
+      "model": "Chat / Direct",
+      "tier": "balanced",
+      "cost": "free",
+      "capabilities": [
+        "vision",
+        "largeInput"
+      ],
+      "observedTitle": null
+    },
+    {
+      "provider": "meta",
+      "model": "Thinking",
+      "tier": "light",
+      "cost": "free",
+      "capabilities": [
+        "vision"
+      ],
+      "observedTitle": null
+    },
+    {
+      "provider": "ptero",
+      "model": "non-text",
+      "tier": "light",
+      "cost": "free",
+      "capabilities": [],
+      "observedTitle": null
+    }
+  ],
+  "externalModels": [
+    "thinkingmachines/inkling-2-mini",
+    "radixark/daisyrose-27b",
+    "mistralai/pixtral-large-2502",
+    "google/gemini-4-neon",
+    "google/gemini-4-neon:batch",
+    "openai/gpt-6.2-astra-pro",
+    "openai/gpt-6.2-astra-pro:batch",
+    "openai/gpt-6.2-astra",
+    "openai/gpt-6.2-astra:batch",
+    "openai/gpt-6.2-sol-pro",
+    "openai/gpt-6.2-sol-pro:batch",
+    "openai/gpt-6.2-sol",
+    "openai/gpt-6.2-sol:batch",
+    "tencent/hy4-flash",
+    "qwen/qwen4-max",
+    "inclusionai/ling-3.2-flash:free",
+    "google/gemini-4-hydrogen",
+    "google/gemini-4-hydrogen:batch",
+    "baidu/ernie-5.5-flash-preview:free",
+    "baidu/ernie-light-dt-1.0-intl",
+    "google/gemini-4-carbon",
+    "google/gemini-4-carbon:batch",
+    "nex-agi/nex-n2.6",
+    "thinkingmachines/inkling-2-small",
+    "anthropic/claude-fable-5.2",
+    "anthropic/claude-fable-5.2:batch",
+    "meta/muse-ember",
+    "liquid/lfm-3-1.7b",
+    "liquid/lfm-3-1.7b:free",
+    "google/gemini-omni-1.2-flash",
+    "kt/midm-k-3.0-pro",
+    "google/gemini-omni-1.1-flash",
+    "ricursiveai/ripple-65b-preview",
+    "tencent/hy4",
+    "motif-technologies/motif-3",
+    "z-ai/glm-5.3-flashx-legal",
+    "particle-ai/particle-1",
+    "particle-ai/particle-1:free",
+    "openai/gpt-6.1-terra-pro",
+    "openai/gpt-6.1-terra-pro:batch",
+    "openai/gpt-6.1-terra",
+    "openai/gpt-6.1-terra:batch",
+    "moonshotai/kimi-k3.1-pro",
+    "moonshotai/kimi-k3.1-pro:batch",
+    "recursive/flint-v1.0:free",
+    "minimax/minimax-m3.1-flash",
+    "deepseek/deepseek-v4.1-flash-1017",
+    "deepseek/deepseek-v4.1-flash-1017:batch",
+    "elorian/glimpse",
+    "reflection/beam-1.0-501b-a23b"
+  ]
+}

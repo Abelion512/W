@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 import fnmatch
+import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -228,41 +231,78 @@ def _bwrap_supports_unshare_net() -> bool:
     return _UNSHARE_NET_SUPPORTED
 
 
+def _fail_or_unsandboxed(command: List[str], warn: str, fatal: str) -> List[str]:
+    if _allow_unsandboxed():
+        sys.stderr.write(f"workspace_mcp: {warn}; running command unsandboxed\n")
+        return list(command)
+    raise RuntimeError(f"SECURITY FATAL: {fatal} Set ZS_ALLOW_UNSANDBOXED=1 to override.")
+
+
+def _worktree_git_dir(root: Path) -> Optional[Path]:
+    """Return the resolved common .git directory when root is a Git worktree."""
+    dot_git = root / ".git"
+    if dot_git.is_symlink():
+        raise ValueError(
+            f"Refusing symlinked .git in workspace root: {dot_git}"
+        )
+    if not dot_git.is_file():
+        return None
+    try:
+        first_line = dot_git.read_text(encoding="utf-8", errors="strict").splitlines()[0].strip()
+    except (OSError, IndexError, UnicodeDecodeError):
+        return None
+    if not first_line.startswith("gitdir:"):
+        return None
+    raw_target = first_line[len("gitdir:"):].strip()
+    if not raw_target:
+        return None
+    gitdir = Path(raw_target)
+    if not gitdir.is_absolute():
+        gitdir = (root / gitdir).resolve()
+    else:
+        gitdir = gitdir.resolve()
+    if not gitdir.is_dir() or not (gitdir / "HEAD").is_file():
+        return None
+    common_file = gitdir / "commondir"
+    if common_file.is_file():
+        try:
+            common_rel = common_file.read_text(encoding="utf-8", errors="strict").strip()
+            common = (gitdir / common_rel).resolve()
+            if common.is_dir() and (common / "HEAD").is_file() and common.name == ".git":
+                return common
+        except (OSError, UnicodeDecodeError):
+            return None
+    return gitdir if gitdir.name == ".git" else None
+
+
 def _sandboxed_argv(command: List[str], root: Path) -> List[str]:
     """Wrap a command in bubblewrap (OpenAI/Anthropic-style OS sandbox).
 
     Filesystem: the host root is mounted read-only and only the workspace
-    root (plus an ephemeral /tmp) is writable; /home and /root are masked
-    with tmpfs so user secrets outside the workspace are not readable.
+    root (plus an ephemeral /tmp and, for Git worktrees, the parent .git dir)
+    is writable; /home and /root are masked with tmpfs so user secrets
+    outside the workspace are not readable.
     Network: disabled by default (ZS_SANDBOX_NETWORK=1 to allow).
     Namespace: user, IPC, PID, UTS and cgroup namespaces are unshared, all
     capabilities are dropped, and the session is detached from the parent.
     Fail closed: a missing or unusable bubblewrap raises RuntimeError. Set
     ZS_ALLOW_UNSANDBOXED=1 to fall back to an unsandboxed command instead.
     """
+    root = Path(root)  # callers at the CLI/test boundary pass a str
     if os.name == "nt":
         return list(command)
     bwrap = shutil.which("bwrap")
     if not bwrap:
-        if _allow_unsandboxed():
-            sys.stderr.write(
-                "workspace_mcp: bubblewrap not found; running command unsandboxed\n"
-            )
-            return list(command)
-        raise RuntimeError(
-            "SECURITY FATAL: bubblewrap (bwrap) not found; unsandboxed execution is "
-            "disabled. Set ZS_ALLOW_UNSANDBOXED=1 to override."
+        return _fail_or_unsandboxed(
+            command,
+            "bubblewrap not found",
+            "bubblewrap (bwrap) not found; unsandboxed execution is disabled.",
         )
     if not _bwrap_usable():
-        if _allow_unsandboxed():
-            sys.stderr.write(
-                "workspace_mcp: bubblewrap unusable in this environment; "
-                "running command unsandboxed\n"
-            )
-            return list(command)
-        raise RuntimeError(
-            "SECURITY FATAL: bubblewrap is unusable in this environment (user namespaces "
-            "disabled or restricted). Set ZS_ALLOW_UNSANDBOXED=1 to override."
+        return _fail_or_unsandboxed(
+            command,
+            "bubblewrap unusable in this environment",
+            "bubblewrap is unusable in this environment (user namespaces disabled or restricted).",
         )
     # A writable (regular-file) /dev/null: bwrap's --dev mount is nodev, so
     # device nodes cannot be opened O_RDWR, which breaks git and others.
@@ -271,15 +311,10 @@ def _sandboxed_argv(command: List[str], root: Path) -> List[str]:
     # host file.
     devnull_path = _secure_devnull()
     if not devnull_path:
-        if _allow_unsandboxed():
-            sys.stderr.write(
-                "workspace_mcp: no secure /dev/null stand-in; "
-                "running command unsandboxed\n"
-            )
-            return list(command)
-        raise RuntimeError(
-            "SECURITY FATAL: could not create the sandbox /dev/null stand-in. "
-            "Set ZS_ALLOW_UNSANDBOXED=1 to override."
+        return _fail_or_unsandboxed(
+            command,
+            "no secure /dev/null stand-in",
+            "could not create the sandbox /dev/null stand-in.",
         )
     # Explicit namespaces instead of --unshare-all: the network namespace is
     # the one operators may need to opt back in (ZS_SANDBOX_NETWORK=1), so it
@@ -330,6 +365,11 @@ def _sandboxed_argv(command: List[str], root: Path) -> List[str]:
         "--tmpfs", "/root",
         "--tmpfs", "/mnt",
         "--tmpfs", "/media",
+    ]
+    worktree_git = _worktree_git_dir(root)
+    if worktree_git is not None:
+        argv += ["--bind", str(worktree_git), str(worktree_git)]
+    argv += [
         "--chdir", "/tmp/workspace",
         # Only an explicit allowlist reaches the command: the server process
         # carries bridge/API secrets in its environment that must not leak
@@ -353,6 +393,7 @@ def _run_process(command: List[str], root: Path, timeout: int = 30) -> str:
     stdout/stderr are drained in capped chunks instead of being buffered whole,
     so a runaway command cannot exhaust memory before the cap is applied.
     """
+    root = Path(root)  # callers at the CLI/test boundary pass a str
     sandboxed = _sandboxed_argv(list(command), root)
     process = subprocess.Popen(
         sandboxed,
@@ -872,6 +913,28 @@ def git_create_pr(title: str, body: str = "", base: str = "") -> str:
 
 
 
+def _assert_command_contained(command: str, extra_args: List[str], root: Path) -> None:
+    """Reject explicit path traversal and out-of-root executables.
+
+    run_command is RCE by design, but it claims the workspace as its boundary.
+    Every process goes through ``_run_process`` → ``_sandboxed_argv`` (bwrap is
+    mandatory, so absolute host paths in *arguments* are already masked by the
+    sandbox — rejecting them would break legitimate sandbox checks such as
+    ``ls /home``). The two things worth catching here are traversal segments,
+    and an executable path that points outside the workspace.
+    """
+    for value in [command, *extra_args]:
+        if not value or value.startswith("-"):
+            continue
+        if ".." in re.split(r"[/\\]", value):
+            raise ValueError(f"Path escapes workspace root: {value}")
+    executable = Path(command.strip())
+    if executable.is_absolute() or len(executable.parts) > 1:
+        resolved = executable.resolve() if executable.is_absolute() else (root / executable).resolve()
+        if not _inside_root(resolved, root):
+            raise ValueError(f"Command path escapes workspace root: {command}")
+
+
 def run_command(
     command: str,
     args: Optional[List[str]] = None,
@@ -891,6 +954,7 @@ def run_command(
     # "/usr/bin/sudo" still resolves to the blocked basename.
     if binary in BLOCKED_COMMANDS:
         raise ValueError(f"Command is blocked by policy: {binary}")
+    _assert_command_contained(command.strip(), extra_args, root)
     requested = timeout if timeout is not None else DEFAULT_COMMAND_TIMEOUT
     try:
         timeout_seconds = int(requested)
@@ -912,12 +976,35 @@ def run_command(
     return _run_process([command, *extra_args], root, timeout=timeout_seconds)
 
 
+def _pyproject_script_command(script: str, root: Path) -> Optional[List[str]]:
+    """Resolve [tool.snapgent.scripts] from pyproject.toml for non-JS projects."""
+    path = root / "pyproject.toml"
+    if not path.is_file():
+        return None
+    try:
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise RuntimeError(f"Could not read pyproject.toml: {error}") from error
+    scripts = (data.get("tool") or {}).get("snapgent", {}).get("scripts") or {}
+    command = scripts.get(script)
+    if not isinstance(command, str) or not command.strip():
+        return None
+    return shlex.split(command)
+
+
 def _package_script_command(script: str, root: Path) -> List[str]:
     if script not in SAFE_PROJECT_SCRIPTS:
         raise ValueError(f"Script must be one of: {', '.join(sorted(SAFE_PROJECT_SCRIPTS))}.")
     package_path = root / "package.json"
     if not package_path.is_file():
-        raise FileNotFoundError("No package.json found in the workspace root.")
+        fallback = _pyproject_script_command(script, root)
+        if fallback is not None:
+            return fallback
+        raise FileNotFoundError(
+            "No package.json found, and pyproject.toml defines no "
+            f"[tool.snapgent.scripts.{script}] command."
+        )
     try:
         package = json.loads(package_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -946,7 +1033,22 @@ def run_tests() -> str:
     if (root / "package.json").is_file():
         return run_project_script("test")
     if (root / "pyproject.toml").is_file() or (root / "pytest.ini").is_file():
-        return _run_process([sys.executable, "-m", "pytest"], root, timeout=300)
+        # pytest being named in the manifest does not mean it is installed. A
+        # bare `python -m pytest` then exits 1 with "No module named pytest",
+        # which looks like a failing suite. Use stdlib unittest in that case.
+        try:
+            has_pytest = importlib.util.find_spec("pytest") is not None
+        except (ImportError, ValueError):
+            has_pytest = False
+        if has_pytest:
+            return _run_process([sys.executable, "-m", "pytest"], root, timeout=300)
+        if (root / "tests").is_dir():
+            return _run_process(
+                [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                root,
+                timeout=300,
+            )
+        raise RuntimeError("pytest is not installed and no tests/ directory exists.")
     if any(root.glob("*.sln")) or any(root.glob("*.csproj")):
         return _run_process(["dotnet", "test"], root, timeout=300)
     raise FileNotFoundError("No supported test setup found (package.json, pytest, or .NET project).")

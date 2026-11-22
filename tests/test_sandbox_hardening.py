@@ -244,3 +244,54 @@ def test_handle_client_rejects_spoofed_host():
 def test_handle_client_accepts_ipv6_loopback():
     socket = _run_handle({"Host": "[::1]:17613"})
     assert socket.close_calls == []
+
+
+def test_worktree_git_dir_resolves_only_common_git_dir():
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        parent = base / "main"
+        common = parent / ".git"
+        wt_meta = common / "worktrees" / "agent"
+        wt_meta.mkdir(parents=True)
+        (parent / "parent_secret.txt").write_text("TOP_SECRET\n", encoding="utf-8")
+        (common / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        (wt_meta / "HEAD").write_text("ref: refs/heads/feat\n", encoding="utf-8")
+        (wt_meta / "commondir").write_text("../..\n", encoding="utf-8")
+        wt = base / "agent"
+        wt.mkdir()
+        (wt / ".git").write_text(f"gitdir: {wt_meta}\n", encoding="utf-8")
+
+        resolved_common = common.resolve()
+        resolved_parent = parent.resolve()
+        assert workspace_mcp._worktree_git_dir(wt) == resolved_common
+
+        argv = workspace_mcp._sandboxed_argv(["true"], wt)
+        binds = [
+            (argv[i + 1], argv[i + 2])
+            for i in range(len(argv) - 2)
+            if argv[i] == "--bind"
+        ]
+        assert (str(resolved_common), str(resolved_common)) in binds
+        assert (str(resolved_parent), str(resolved_parent)) not in binds
+
+        out = run_sandboxed(
+            "import os; "
+            f"print(os.path.isfile({str(resolved_common / 'HEAD')!r}), "
+            f"os.path.exists({str(resolved_parent / 'parent_secret.txt')!r}))",
+            wt,
+        )
+        assert out.strip() == "True False"
+
+        plain = base / "plain"
+        plain.mkdir()
+        assert workspace_mcp._worktree_git_dir(plain) is None
+
+        evil = base / "evil"
+        evil.mkdir()
+        os.symlink(wt / ".git", evil / ".git")
+        with pytest.raises(ValueError, match="symlink"):
+            workspace_mcp._worktree_git_dir(evil)
+        with pytest.raises(ValueError, match="symlink"):
+            workspace_mcp._sandboxed_argv(["true"], evil)

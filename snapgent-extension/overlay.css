@@ -37,12 +37,38 @@
   --zs-r-lg: 12px; --zs-r-xl: 13px; --zs-r-2xl: 14px; --zs-r-pill: 999px;
 
   /* type */
-  --zs-text-3xs: 9.5px; --zs-text-2xs: 10px; --zs-text-xs: 10.5px;
-  --zs-text-sm: 11.5px; --zs-text-md: 12px; --zs-text-lg: 12.5px; --zs-text-xl: 13px;
+  /* Type scale — desktop floor 10 pt, default 13 pt (HIG Accessibility). */
+  --zs-text-3xs: 10.5px; --zs-text-2xs: 11px; --zs-text-xs: 11.5px;
+  --zs-text-sm: 12.5px; --zs-text-md: 13px; --zs-text-lg: 13.5px; --zs-text-xl: 15px;
   --zs-lh-tight: 1.3; --zs-lh-body: 1.45;
   --zs-w-medium: 500; --zs-w-semibold: 600; --zs-w-bold: 700;
-  --zs-font-ui: ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --zs-font-num: ui-monospace, "Cascadia Code", "Cascadia Mono", monospace;
+  --zs-font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  --zs-font-num: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+
+  /* Semantic colour roles — dark default.
+     accent = primary action only; signal = state, never decoration. */
+  --zs-surface: #0b1220;
+  --zs-bar-bg: rgba(11, 18, 32, 0.82);
+  --zs-menu-bg: #0b1220;
+  --zs-content: #e8eef8;
+  --zs-content-muted: #93a5bd;
+  --zs-accent: #2563eb;
+  --zs-accent-hover: #3b82f6;
+  --zs-accent-soft: #60a5fa;
+  --zs-accent-fg: #ffffff;
+  --zs-pill-bg: rgba(96, 165, 250, 0.08);
+  --zs-pill-hover-bg: rgba(96, 165, 250, 0.16);
+  --zs-pill-fg: #bfdbfe;
+  --zs-pill-border: rgba(96, 165, 250, 0.55);
+  --zs-signal-done: #34d399;
+  --zs-signal-error: #f87171;
+  --zs-signal-neutral: #94a3b8;
+  --zs-hairline: rgba(255, 255, 255, 0.14);
+  --zs-divider: rgba(255, 255, 255, 0.08);
+  --zs-ring-shadow: 0 0 0 1px rgba(96, 165, 250, 0.45), 0 0 12px rgba(96, 165, 250, 0.16);
+  --zs-shadow-bar: 0 8px 30px rgba(0, 0, 0, 0.38);
+  --zs-shadow-menu: 0 16px 44px rgba(0, 0, 0, 0.55);
+  --zs-bar-backdrop: blur(12px) saturate(1.15);
 
   /* motion (decelerating curve, no bounce) */
   --zs-ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -57,10 +83,98 @@
   --zs-weight-strong: var(--zs-w-bold);
 }
 
+/* Light appearance default tokens (toggled on <html> by ui-controller.js) */
+html.zs-light {
+  --zs-surface: #f5f8ff;
+  --zs-bar-bg: rgba(245, 248, 255, 0.93);
+  --zs-menu-bg: #f5f8ff;
+  --zs-content: #14213a;
+  --zs-content-muted: #475569;
+  --zs-accent: #1d4ed8;
+  --zs-accent-hover: #1e40af;
+  --zs-accent-soft: #1d4ed8;
+  --zs-accent-fg: #ffffff;
+  --zs-pill-bg: rgba(29, 78, 216, 0.07);
+  --zs-pill-hover-bg: rgba(29, 78, 216, 0.14);
+  --zs-pill-fg: #1e3a5f;
+  --zs-pill-border: rgba(37, 99, 235, 0.45);
+  --zs-signal-done: #047857;
+  --zs-signal-error: #b91c1c;
+  --zs-signal-neutral: #475569;
+  --zs-hairline: rgba(15, 23, 42, 0.14);
+  --zs-divider: rgba(15, 23, 42, 0.09);
+  --zs-ring-shadow: 0 0 0 1px rgba(37, 99, 235, 0.38), 0 0 10px rgba(37, 99, 235, 0.14);
+  --zs-shadow-bar: 0 8px 30px rgba(15, 23, 42, 0.14);
+  --zs-shadow-menu: 0 12px 36px rgba(15, 23, 42, 0.16);
+}
+
+/* ── CSS isolation barrier ─────────────────────────────────────────────────
+   Consistent #zs-* / .zs-* root isolation so host stylesheets (Tailwind,
+   Angular Material, Ant Design, Svelte prose) cannot override overlay
+   typography, box-sizing, or stacking context — even when mounted inline. */
+:is(#zs-root, #zs-bar, #zs-menu, #zs-target-menu, #zs-mcp-pop, #zs-setup, #zs-input-cover, #zs-unstable, .zs-chip, .zs-toast, .zs-banner, .zs-shot) {
+  box-sizing: border-box;
+  isolation: isolate;
+  font-family: var(--zs-font-ui);
+  font-style: normal;
+  font-variant: normal;
+  font-weight: var(--zs-w-medium);
+  line-height: var(--zs-lh-tight);
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-transform: none;
+  text-indent: 0;
+  text-shadow: none;
+  text-align: left;
+  text-decoration: none;
+  -webkit-font-smoothing: antialiased;
+}
+:is(#zs-root, #zs-bar, #zs-menu, #zs-target-menu, #zs-mcp-pop, #zs-setup, #zs-input-cover, #zs-unstable, .zs-chip, .zs-toast, .zs-banner, .zs-shot) *,
+:is(#zs-root, #zs-bar, #zs-menu, #zs-target-menu, #zs-mcp-pop, #zs-setup, #zs-input-cover, #zs-unstable, .zs-chip, .zs-toast, .zs-banner, .zs-shot) *::before,
+:is(#zs-root, #zs-bar, #zs-menu, #zs-target-menu, #zs-mcp-pop, #zs-setup, #zs-input-cover, #zs-unstable, .zs-chip, .zs-toast, .zs-banner, .zs-shot) *::after {
+  box-sizing: border-box;
+}
+:is(#zs-bar, #zs-menu, #zs-target-menu, #zs-mcp-pop, #zs-setup, .zs-chip, .zs-banner, .zs-shot) button,
+#zs-unstable {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  font-family: inherit;
+  font-style: normal;
+  letter-spacing: normal;
+  text-transform: none;
+  text-decoration: none;
+  text-shadow: none;
+  line-height: var(--zs-lh-tight);
+}
+:is(#zs-bar, #zs-menu, #zs-target-menu, #zs-mcp-pop, #zs-setup, .zs-chip, .zs-banner, .zs-shot) svg {
+  display: block;
+  flex: none;
+}
+
 #zs-root {
   position: fixed;
   z-index: 2147483600;
   font-family: var(--zs-font-ui);
+}
+
+/* ── composer halo: follows the site's input box, click-through ──────────── */
+#zs-composer-glow {
+  position: fixed; display: none; pointer-events: none;
+  z-index: 2147483490; /* under the bar and the input cover */
+  box-sizing: border-box;
+  box-shadow: var(--zs-ring-shadow);
+  transition: box-shadow 0.2s ease;
+}
+/* Bar + composer = one band. The ring supplies the outside edge. */
+#zs-bar.zs-bar-unified {
+  /* Keep the top edge rounded and match the subtle bottom divider. */
+  border-top-left-radius: var(--zs-bar-radius) !important;
+  border-top-right-radius: var(--zs-bar-radius) !important;
+  border-bottom-left-radius: 0 !important; border-bottom-right-radius: 0 !important;
+  border-bottom: 1px solid var(--zs-divider) !important;
+  box-shadow: none !important;
+  backdrop-filter: none; -webkit-backdrop-filter: none;
 }
 
 /* ── status bar (anchored above the composer; left/top/width set inline) ──── */
@@ -71,24 +185,21 @@
   gap: var(--zs-bar-gap);
   box-sizing: border-box;
   padding: var(--zs-sp-4) var(--zs-sp-5) var(--zs-sp-4) var(--zs-sp-6);
-  background: rgba(20, 20, 28, 0.97);
-  color: #e8e8ec;
-  border: 1px solid rgba(129, 140, 248, 0.30);
+  /* Regular functional material: restrained blur, one hairline, no colour
+     fill beyond the neutral surface (HIG Materials › Liquid Glass). */
+  background: var(--zs-bar-bg);
+  color: var(--zs-content);
+  border: 1px solid var(--zs-hairline);
   border-radius: var(--zs-bar-radius);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.42);
-  backdrop-filter: blur(10px);
+  box-shadow: var(--zs-shadow-bar);
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+  font-family: var(--zs-font-ui);
   font-size: var(--zs-text-md);
   user-select: none;
 }
 
-/* In-flow mode: the bar is a real, full-width node in the composer layout that
-   pushes content down instead of floating. Two looks:
-   • default (mounted ABOVE the input box, e.g. Gemini, Claude) → flat and flush:
-     no card, no gap, no rules. It reads as the composer's own top row rather than
-     a second widget stacked on it (a translucent card + 8px gap was measured live
-     as "a detached pill floating above the input" on Gemini and Claude);
-   • .zs-bar-inside (mounted INSIDE the input box, e.g. DeepSeek) → transparent
-     with just a divider, so it blends into the composer surface it lives in. */
+/* In-flow mode: full-width node in the composer layout that pushes content down. */
 #zs-bar.zs-bar-inline {
   position: static;
   width: 100%;
@@ -100,6 +211,7 @@
   border-radius: 0;
   box-shadow: none;
   backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   padding: var(--zs-sp-1) var(--zs-bar-inset) var(--zs-sp-4);
 }
 html.zs-light #zs-bar.zs-bar-inline {
@@ -110,52 +222,277 @@ html.zs-light #zs-bar.zs-bar-inline {
   margin: 0 0 var(--zs-sp-3);
   background: transparent;
   border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--zs-divider);
   border-radius: 0;
-  /* Inset to match the composer's own text padding so the content lines up with
-     the input and the right-side buttons clear the rounded corner. */
   padding: var(--zs-sp-2) var(--zs-bar-inset) var(--zs-sp-5);
 }
 html.zs-light #zs-bar.zs-bar-inline.zs-bar-inside {
   background: transparent;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid var(--zs-divider);
 }
 
-/* Anchored mode: the bar keeps position:fixed (it must NOT enter the site's
-   framework-managed composer DOM, e.g. Kimi's Vue subtree) but the core sizes
-   and positions it to hug the composer's top edge at full width, with reserved
-   padding on the composer so it reads as in-flow. Transparent like the
-   .zs-bar-inside look, so it blends into the composer surface. */
+/* Anchored mode: fixed positioning hugging the composer's top edge at full width. */
 #zs-bar.zs-bar-anchored {
   background: transparent;
   border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--zs-divider);
   border-radius: 0;
   box-shadow: none;
   backdrop-filter: none;
-  /* A touch of vertical room so the bar doesn't feel cramped against the input
-     (matches the roomier DeepSeek inline look). The reserved strip in placeBar
-     (bar height + gap) tracks this automatically. */
+  -webkit-backdrop-filter: none;
   padding: var(--zs-sp-5) var(--zs-bar-inset);
 }
 html.zs-light #zs-bar.zs-bar-anchored {
   background: transparent;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid var(--zs-divider);
 }
 
-/* ── per-site rules: re-point tokens, never new pixel values ────────────────
-   A provider gets its own line here only when the host's own design language
-   reads better than the scale. Each line picks a step from the token scale, so
-   the bar keeps one rhythm across sites. DeepSeek is deliberately absent: the
-   defaults already blend there. */
-/* Gemini: its system stack looked foreign next to Google Sans, and the bold
-   weight read heavy against Gemini's type - match the host instead. */
+/* ── per-provider design tokens ────────────────────────────────────────────
+   Each supported AI site re-points colour, border, radius, and font tokens
+   instead of ad-hoc per-element overrides. Declared on both html.zs-site-<id>
+   (reaches popups/menus/chips) and #zs-bar.zs-prov-<id> (explicit on bar). */
+
+/* 1. Gemini (gemini.google.com) — Google Material 3 + Google Sans */
+html.zs-site-gemini,
 #zs-bar.zs-prov-gemini {
   --zs-font-ui: "Google Sans Text", "Google Sans", Roboto, ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
   --zs-weight-strong: var(--zs-w-medium);
+  --zs-bar-radius: var(--zs-r-2xl);
+  --zs-surface: #1e1f20;
+  --zs-bar-bg: rgba(30, 31, 32, 0.88);
+  --zs-menu-bg: #1e1f20;
+  --zs-content: #e3e3e3;
+  --zs-content-muted: #c4c7c5;
+  --zs-accent: #1a73e8;
+  --zs-accent-hover: #2b7de9;
+  --zs-accent-soft: #a8c7fa;
+  --zs-pill-bg: rgba(168, 199, 250, 0.10);
+  --zs-pill-hover-bg: rgba(168, 199, 250, 0.18);
+  --zs-pill-fg: #d3e3fd;
+  --zs-pill-border: rgba(168, 199, 250, 0.42);
+  --zs-hairline: rgba(255, 255, 255, 0.12);
+  --zs-divider: rgba(255, 255, 255, 0.09);
+  --zs-ring-shadow: 0 0 0 1px rgba(168, 199, 250, 0.34), 0 0 12px rgba(168, 199, 250, 0.08);
 }
-#zs-bar.zs-prov-gemini #zs-action,
-#zs-bar.zs-prov-gemini #zs-state b { font-weight: var(--zs-weight-strong); }
+html.zs-light.zs-site-gemini,
+html.zs-light #zs-bar.zs-prov-gemini {
+  --zs-surface: #f0f4f9;
+  --zs-bar-bg: rgba(240, 244, 249, 0.94);
+  --zs-menu-bg: #f0f4f9;
+  --zs-content: #1f1f1f;
+  --zs-content-muted: #444746;
+  --zs-accent: #1a73e8;
+  --zs-accent-hover: #1557b0;
+  --zs-accent-soft: #1a73e8;
+  --zs-pill-bg: rgba(26, 115, 232, 0.08);
+  --zs-pill-hover-bg: rgba(26, 115, 232, 0.15);
+  --zs-pill-fg: #1f1f1f;
+  --zs-pill-border: rgba(26, 115, 232, 0.36);
+  --zs-hairline: rgba(68, 71, 70, 0.18);
+  --zs-divider: rgba(68, 71, 70, 0.12);
+  --zs-ring-shadow: 0 0 0 1px rgba(26, 115, 232, 0.36), 0 0 10px rgba(26, 115, 232, 0.12);
+}
+
+/* 2. DeepSeek (chat.deepseek.com) — slate charcoal + royal blue + Inter */
+html.zs-site-deepseek,
+#zs-bar.zs-prov-deepseek {
+  --zs-font-ui: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --zs-bar-radius: var(--zs-r-2xl);
+  --zs-surface: #212327;
+  --zs-bar-bg: rgba(33, 35, 39, 0.88);
+  --zs-menu-bg: #212327;
+  --zs-content: #f0f4ff;
+  --zs-content-muted: #a1a8b8;
+  --zs-accent: #3b5bdb;
+  --zs-accent-hover: #4c6ef5;
+  --zs-accent-soft: #8ea4ff;
+  --zs-pill-bg: rgba(77, 107, 254, 0.12);
+  --zs-pill-hover-bg: rgba(77, 107, 254, 0.22);
+  --zs-pill-fg: #dbe4ff;
+  --zs-pill-border: rgba(142, 164, 255, 0.45);
+  --zs-hairline: rgba(255, 255, 255, 0.11);
+  --zs-divider: rgba(255, 255, 255, 0.08);
+  --zs-ring-shadow: 0 0 0 1px rgba(142, 164, 255, 0.32), 0 0 12px rgba(77, 107, 254, 0.10);
+}
+html.zs-light.zs-site-deepseek,
+html.zs-light #zs-bar.zs-prov-deepseek {
+  --zs-surface: #f5f7fb;
+  --zs-bar-bg: rgba(245, 247, 251, 0.94);
+  --zs-menu-bg: #f5f7fb;
+  --zs-content: #1c2029;
+  --zs-content-muted: #525b6d;
+  --zs-accent: #3b5bdb;
+  --zs-accent-hover: #364fc7;
+  --zs-accent-soft: #3b5bdb;
+  --zs-pill-bg: rgba(59, 91, 219, 0.07);
+  --zs-pill-hover-bg: rgba(59, 91, 219, 0.14);
+  --zs-pill-fg: #1c2029;
+  --zs-pill-border: rgba(59, 91, 219, 0.36);
+  --zs-hairline: rgba(28, 32, 41, 0.14);
+  --zs-divider: rgba(28, 32, 41, 0.09);
+  --zs-ring-shadow: 0 0 0 1px rgba(59, 91, 219, 0.36), 0 0 10px rgba(59, 91, 219, 0.12);
+}
+
+/* 3. Rudder (rudder.chat) — neutral zinc + Geist / Inter */
+html.zs-site-rudder,
+#zs-bar.zs-prov-rudder {
+  --zs-font-ui: "Geist", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --zs-bar-radius: var(--zs-r-lg);
+  --zs-surface: #18181b;
+  --zs-bar-bg: rgba(24, 24, 27, 0.88);
+  --zs-menu-bg: #18181b;
+  --zs-content: #f4f4f5;
+  --zs-content-muted: #a1a1aa;
+  --zs-accent: #2563eb;
+  --zs-accent-hover: #3b82f6;
+  --zs-accent-soft: #60a5fa;
+  --zs-pill-bg: rgba(96, 165, 250, 0.10);
+  --zs-pill-hover-bg: rgba(96, 165, 250, 0.18);
+  --zs-pill-fg: #e4e4e7;
+  --zs-pill-border: rgba(96, 165, 250, 0.44);
+  --zs-hairline: rgba(255, 255, 255, 0.12);
+  --zs-divider: rgba(255, 255, 255, 0.08);
+  --zs-ring-shadow: 0 0 0 1px rgba(244, 244, 245, 0.22), 0 0 12px rgba(244, 244, 245, 0.07);
+}
+html.zs-light.zs-site-rudder,
+html.zs-light #zs-bar.zs-prov-rudder {
+  --zs-surface: #f8fafc;
+  --zs-bar-bg: rgba(248, 250, 252, 0.94);
+  --zs-menu-bg: #f8fafc;
+  --zs-content: #0f172a;
+  --zs-content-muted: #475569;
+  --zs-accent: #1d4ed8;
+  --zs-accent-hover: #1e40af;
+  --zs-accent-soft: #1d4ed8;
+  --zs-pill-bg: rgba(29, 78, 216, 0.07);
+  --zs-pill-hover-bg: rgba(29, 78, 216, 0.14);
+  --zs-pill-fg: #0f172a;
+  --zs-pill-border: rgba(29, 78, 216, 0.36);
+  --zs-hairline: rgba(15, 23, 42, 0.13);
+  --zs-divider: rgba(15, 23, 42, 0.08);
+  --zs-ring-shadow: 0 0 0 1px rgba(29, 78, 216, 0.34), 0 0 10px rgba(29, 78, 216, 0.12);
+}
+
+/* 4. Ptero (ptero.pro) — dark slate + indigo + Plus Jakarta Sans */
+html.zs-site-ptero,
+#zs-bar.zs-prov-ptero {
+  --zs-font-ui: "Plus Jakarta Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --zs-bar-radius: var(--zs-r-lg);
+  --zs-surface: #14161b;
+  --zs-bar-bg: rgba(20, 22, 27, 0.88);
+  --zs-menu-bg: #14161b;
+  --zs-content: #edf1f7;
+  --zs-content-muted: #9aa4b2;
+  --zs-accent: #4f46e5;
+  --zs-accent-hover: #6366f1;
+  --zs-accent-soft: #818cf8;
+  --zs-pill-bg: rgba(129, 140, 248, 0.11);
+  --zs-pill-hover-bg: rgba(129, 140, 248, 0.20);
+  --zs-pill-fg: #e0e7ff;
+  --zs-pill-border: rgba(129, 140, 248, 0.44);
+  --zs-hairline: rgba(255, 255, 255, 0.12);
+  --zs-divider: rgba(255, 255, 255, 0.08);
+  --zs-ring-shadow: 0 0 0 1px rgba(129, 140, 248, 0.34), 0 0 12px rgba(79, 70, 229, 0.10);
+}
+html.zs-light.zs-site-ptero,
+html.zs-light #zs-bar.zs-prov-ptero {
+  --zs-surface: #f6f7fb;
+  --zs-bar-bg: rgba(246, 247, 251, 0.94);
+  --zs-menu-bg: #f6f7fb;
+  --zs-content: #181c26;
+  --zs-content-muted: #4b5563;
+  --zs-accent: #4338ca;
+  --zs-accent-hover: #3730a3;
+  --zs-accent-soft: #4338ca;
+  --zs-pill-bg: rgba(67, 56, 202, 0.07);
+  --zs-pill-hover-bg: rgba(67, 56, 202, 0.14);
+  --zs-pill-fg: #181c26;
+  --zs-pill-border: rgba(67, 56, 202, 0.36);
+  --zs-hairline: rgba(24, 28, 38, 0.13);
+  --zs-divider: rgba(24, 28, 38, 0.08);
+  --zs-ring-shadow: 0 0 0 1px rgba(67, 56, 202, 0.34), 0 0 10px rgba(67, 56, 202, 0.12);
+}
+
+/* 5. Claude (claude.ai) — warm charcoal/parchment + terracotta + Anthropic Sans */
+html.zs-site-claude,
+#zs-bar.zs-prov-claude {
+  --zs-font-ui: "Anthropic Sans", "Styrene B", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --zs-weight-strong: var(--zs-w-semibold);
+  --zs-bar-radius: var(--zs-r-2xl);
+  --zs-surface: #2b2a27;
+  --zs-bar-bg: rgba(43, 42, 39, 0.88);
+  --zs-menu-bg: #2b2a27;
+  --zs-content: #eeece2;
+  --zs-content-muted: #b4b1a6;
+  --zs-accent: #b55436;
+  --zs-accent-hover: #c66142;
+  --zs-accent-soft: #e89275;
+  --zs-pill-bg: rgba(232, 146, 117, 0.10);
+  --zs-pill-hover-bg: rgba(232, 146, 117, 0.18);
+  --zs-pill-fg: #f3dfd6;
+  --zs-pill-border: rgba(232, 146, 117, 0.42);
+  --zs-hairline: rgba(238, 236, 226, 0.13);
+  --zs-divider: rgba(238, 236, 226, 0.09);
+  --zs-ring-shadow: 0 0 0 1px rgba(238, 236, 226, 0.22), 0 0 12px rgba(232, 146, 117, 0.08);
+}
+html.zs-light.zs-site-claude,
+html.zs-light #zs-bar.zs-prov-claude {
+  --zs-surface: #faf9f5;
+  --zs-bar-bg: rgba(250, 249, 245, 0.95);
+  --zs-menu-bg: #faf9f5;
+  --zs-content: #1c1b18;
+  --zs-content-muted: #5c5a52;
+  --zs-accent: #a84a2d;
+  --zs-accent-hover: #8f3d24;
+  --zs-accent-soft: #a84a2d;
+  --zs-pill-bg: rgba(168, 74, 45, 0.07);
+  --zs-pill-hover-bg: rgba(168, 74, 45, 0.14);
+  --zs-pill-fg: #1c1b18;
+  --zs-pill-border: rgba(168, 74, 45, 0.34);
+  --zs-hairline: rgba(28, 27, 24, 0.14);
+  --zs-divider: rgba(28, 27, 24, 0.09);
+  --zs-ring-shadow: 0 0 0 1px rgba(168, 74, 45, 0.34), 0 0 10px rgba(168, 74, 45, 0.11);
+}
+
+/* 6. chat.z.ai / GLM (chat.z.ai) — neutral graphite + sky-blue + Inter */
+html.zs-site-glm,
+#zs-bar.zs-prov-glm {
+  --zs-font-ui: Inter, "HarmonyOS Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --zs-bar-radius: var(--zs-r-2xl);
+  --zs-surface: #1b1c1f;
+  --zs-bar-bg: rgba(27, 28, 31, 0.88);
+  --zs-menu-bg: #1b1c1f;
+  --zs-content: #f2f3f5;
+  --zs-content-muted: #a1a7b3;
+  --zs-accent: #0369a1;
+  --zs-accent-hover: #0284c7;
+  --zs-accent-soft: #7dd3fc;
+  --zs-pill-bg: rgba(125, 211, 252, 0.10);
+  --zs-pill-hover-bg: rgba(125, 211, 252, 0.18);
+  --zs-pill-fg: #e0f2fe;
+  --zs-pill-border: rgba(125, 211, 252, 0.42);
+  --zs-hairline: rgba(255, 255, 255, 0.11);
+  --zs-divider: rgba(255, 255, 255, 0.08);
+  --zs-ring-shadow: 0 0 0 1px rgba(125, 211, 252, 0.30), 0 0 12px rgba(3, 105, 161, 0.10);
+}
+html.zs-light.zs-site-glm,
+html.zs-light #zs-bar.zs-prov-glm {
+  --zs-surface: #f7f8fa;
+  --zs-bar-bg: rgba(247, 248, 250, 0.94);
+  --zs-menu-bg: #f7f8fa;
+  --zs-content: #181a1f;
+  --zs-content-muted: #4b5563;
+  --zs-accent: #0369a1;
+  --zs-accent-hover: #075985;
+  --zs-accent-soft: #0369a1;
+  --zs-pill-bg: rgba(3, 105, 161, 0.07);
+  --zs-pill-hover-bg: rgba(3, 105, 161, 0.14);
+  --zs-pill-fg: #181a1f;
+  --zs-pill-border: rgba(3, 105, 161, 0.35);
+  --zs-hairline: rgba(24, 26, 31, 0.13);
+  --zs-divider: rgba(24, 26, 31, 0.08);
+  --zs-ring-shadow: 0 0 0 1px rgba(3, 105, 161, 0.34), 0 0 10px rgba(3, 105, 161, 0.11);
+}
 
 /* ChatGPT's composer surface is a CSS grid. Its template was, until 2026-09:
      "header header header" / "leading primary trailing" / ". footer ."
@@ -238,40 +575,43 @@ html.zs-light [class*='ComposerLayoutRoot'] > #zs-bar.zs-bar-inline.zs-bar-insid
   padding: 0; margin-left: var(--zs-sp-1); vertical-align: middle;
 }
 
-/* provider instability warning (Gemini / Kimi): a small amber pill that FLOATS
+/* provider instability warning (Gemini / Kimi): a small blue pill that FLOATS
    just above the bar (positioned by placeUnstable each frame) instead of sitting
    inside it - so it never crowds the row on narrow composers. Click / hover for
    the full explanation (toast + title tooltip). */
 #zs-unstable {
   position: fixed; z-index: 2147483601;
   display: inline-flex; align-items: center; cursor: pointer;
-  font-size: var(--zs-text-2xs); font-weight: var(--zs-w-bold);
+  font-size: var(--zs-text-2xs); font-weight: var(--zs-weight-strong);
   letter-spacing: 0.3px; white-space: nowrap;
-  color: #fbbf24; background: rgba(28, 24, 12, 0.97);
-  border: 1px solid rgba(251, 191, 36, 0.4); border-radius: var(--zs-r-xs);
+  color: var(--zs-accent-soft); background: var(--zs-surface);
+  border: 1px solid var(--zs-pill-border); border-radius: var(--zs-r-xs);
   padding: var(--zs-sp-1) var(--zs-sp-4); line-height: var(--zs-lh-tight);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
   transition: background var(--zs-dur) var(--zs-ease);
 }
-#zs-unstable:hover { background: rgba(44, 37, 16, 0.98); }
+#zs-unstable:hover { background: var(--zs-pill-hover-bg); }
 html.zs-light #zs-unstable {
-  color: #92610a; background: rgba(255, 251, 240, 0.98);
-  border-color: rgba(180, 130, 10, 0.45);
+  color: var(--zs-accent); background: var(--zs-surface);
+  border-color: var(--zs-pill-border);
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.16);
 }
+html.zs-light #zs-unstable:hover { background: var(--zs-pill-hover-bg); }
 
 /* state line: takes the slack, single line, ellipsis if it can't fit */
 #zs-state {
   flex: 1; min-width: 0;
+  min-height: var(--zs-control-h);
   display: flex; align-items: center; gap: var(--zs-sp-3);
-  font-size: var(--zs-text-sm); line-height: var(--zs-lh-tight); opacity: 0.85;
+  font-size: var(--zs-text-sm); line-height: var(--zs-lh-tight); opacity: 0.9;
+  color: var(--zs-content);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .zs-state-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-#zs-state b { font-weight: var(--zs-w-bold); opacity: 1; color: #c7d2fe; }
-#zs-state.zs-state-warn { opacity: 1; color: #fca5a5; }
-#zs-state.zs-state-warn b { color: #fecaca; }
-#zs-bar.tone-active #zs-state b { color: #6ee7b7; }
+#zs-state b { font-weight: var(--zs-weight-strong); opacity: 1; color: var(--zs-accent-soft); }
+#zs-state.zs-state-warn { opacity: 1; color: var(--zs-signal-error); }
+#zs-state.zs-state-warn b { color: var(--zs-signal-error); }
+#zs-bar.tone-active #zs-state b { color: var(--zs-signal-done); }
 
 /* primary action button (Start) */
 #zs-action {
@@ -280,65 +620,61 @@ html.zs-light #zs-unstable {
   min-height: var(--zs-control-h);
   padding: var(--zs-sp-3) var(--zs-sp-6);
   border-radius: var(--zs-r-md); border: 1px solid transparent;
-  font-size: var(--zs-text-lg); font-weight: var(--zs-w-bold);
+  font-size: var(--zs-text-lg); font-weight: var(--zs-weight-strong);
   cursor: pointer; white-space: nowrap;
   transition: filter 0.15s var(--zs-ease), background 0.15s var(--zs-ease);
-  /* The label's "▶" (U+25B6) has both a text and an emoji presentation. On sites
-     whose font stack has no text glyph for it (ChatGPT), the browser falls back
-     to the colour emoji font and the arrow renders as a blue emoji instead of a
-     flat character like everywhere else. The labels also carry U+FE0E after the
-     arrow, which requests the same thing on browsers without this property. */
   font-variant-emoji: text;
 }
 #zs-action[data-kind="start"] {
-  background: linear-gradient(135deg, #6366f1, #818cf8); color: #fff; border-color: transparent;
-  box-shadow: 0 2px 12px rgba(99, 102, 241, 0.45);
+  background: var(--zs-accent); color: var(--zs-accent-fg); border-color: transparent;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
 }
-#zs-action[data-kind="start"]:hover { filter: brightness(1.08); }
-/* Degraded start: Roblox is down but another MCP server is live. Amber to signal
-   "startable, but not the full setup" - distinct from the blue full-ready start. */
+#zs-action[data-kind="start"]:hover { background: var(--zs-accent-hover); filter: brightness(1.04); }
+/* Degraded start: Roblox is down but another MCP server is live. Teal signals
+   "startable, but not the full setup". */
 #zs-action[data-kind="start-degraded"] {
-  background: linear-gradient(135deg, #d97706, #f59e0b); color: #fff; border-color: transparent;
-  box-shadow: 0 2px 12px rgba(217, 119, 6, 0.45);
+  background: linear-gradient(135deg, #0d9488, #0f766e); color: #fff; border-color: transparent;
+  box-shadow: 0 2px 12px rgba(13, 148, 136, 0.4);
 }
 #zs-action[data-kind="start-degraded"]:hover { filter: brightness(1.08); }
 #zs-action:disabled {
   background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.45);
-  border-color: rgba(255, 255, 255, 0.10); box-shadow: none; cursor: not-allowed;
+  border-color: var(--zs-hairline); box-shadow: none; cursor: not-allowed;
 }
 /* attention flash when the user sends on a fresh chat without starting */
 #zs-action.zs-flash { animation: zs-flash 0.4s ease-in-out 3; }
 @keyframes zs-flash {
   0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.06); box-shadow: 0 0 0 4px rgba(129, 140, 248, 0.6); }
+  50% { transform: scale(1.06); box-shadow: 0 0 0 4px var(--zs-pill-border); }
 }
 
 /* stop button (replaces the action button while the agent is busy) */
 #zs-stop {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
   height: var(--zs-control-h); padding: 0 var(--zs-sp-7);
-  background: #eab308; color: #000; border: 1px solid rgba(234, 179, 8, 0.75);
+  background: var(--zs-accent); color: var(--zs-accent-fg); border: 1px solid var(--zs-pill-border);
   border-radius: var(--zs-r-pill);
-  font-size: var(--zs-text-md); font-weight: var(--zs-w-bold);
+  font-size: var(--zs-text-md); font-weight: var(--zs-weight-strong);
   cursor: pointer; white-space: nowrap;
   transition: background var(--zs-dur) var(--zs-ease);
 }
 #zs-stop[hidden] { display: none; }
-#zs-stop:hover { background: #facc15; }
+#zs-stop:hover { background: var(--zs-accent-hover); }
 /* Winding-down state: the loop is finishing its in-flight step after a Stop
    click. Dimmed + not-allowed so it reads as "registered, please wait". */
 #zs-stop[data-state="stopping"] {
-  background: #eab308; color: #000; cursor: progress; opacity: 0.6;
+  background: var(--zs-accent); color: var(--zs-accent-fg); cursor: progress; opacity: 0.6;
 }
-#zs-stop[data-state="stopping"]:hover { background: #eab308; }
+#zs-stop[data-state="stopping"]:hover { background: var(--zs-accent); }
 
 /* Target and model selectors follow the Snapgent header pill style. */
+#zs-bar .zs-target-wrap[hidden] { display: none !important; }
 .zs-target-wrap {
   flex: none; position: relative; display: inline-flex; align-items: center;
   height: var(--zs-control-h);
   padding: 0 var(--zs-sp-5) 0 var(--zs-sp-6);
-  color: #d0d0d6; background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(234, 179, 8, 0.75); border-radius: var(--zs-r-pill);
+  color: var(--zs-pill-fg); background: var(--zs-pill-bg);
+  border: 1px solid var(--zs-pill-border); border-radius: var(--zs-r-pill);
 }
 #zs-target {
   appearance: none; -webkit-appearance: none;
@@ -356,8 +692,11 @@ html.zs-light #zs-unstable {
   cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left;
 }
-#zs-target-btn:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.4); outline-offset: var(--zs-sp-2);
+#zs-target-btn:focus-visible,
+#zs-action:focus-visible,
+#zs-stop:focus-visible,
+#zs-switch:focus-visible {
+  outline: 2px solid var(--zs-accent-soft); outline-offset: var(--zs-sp-1);
   border-radius: var(--zs-r-xs);
 }
 
@@ -367,32 +706,28 @@ html.zs-light #zs-unstable {
   box-sizing: border-box;
   width: min(220px, calc(100vw - 16px)); min-width: 0; overflow-y: auto;
   padding: 0 0 var(--zs-sp-3);
-  background: #161618; color: #ececee;
-  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--zs-r-lg);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
+  background: var(--zs-menu-bg); color: var(--zs-content);
+  border: 1px solid var(--zs-pill-border); border-radius: var(--zs-r-lg);
+  box-shadow: var(--zs-shadow-menu);
   font-size: var(--zs-text-md); animation: zs-pop 0.16s ease-out;
-  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.22) transparent;
+  scrollbar-width: thin; scrollbar-color: var(--zs-pill-border) transparent;
 }
 #zs-target-menu[hidden] { display: none; }
 #zs-target-menu .zs-target-opt { width: 100%; }
 #zs-target-menu .zs-target-cur { cursor: default; }
-html.zs-light #zs-target-menu {
-  background: #ffffff; color: #1f2937; border-color: rgba(0, 0, 0, 0.1);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.18); scrollbar-color: rgba(0,0,0,0.25) transparent;
-}
 .zs-target-wrap svg { position: absolute; right: var(--zs-sp-4); pointer-events: none; opacity: 0.65; }
 
 /* model switcher: names the current AI and opens the provider menu */
 #zs-switch {
   flex: none; display: flex; align-items: center; gap: var(--zs-sp-2);
   height: var(--zs-control-h); padding: 0 var(--zs-sp-6);
-  background: rgba(255, 255, 255, 0.04); color: #d0d0d6;
-  border: 1px solid rgba(234, 179, 8, 0.75); border-radius: var(--zs-r-pill);
+  background: var(--zs-pill-bg); color: var(--zs-pill-fg);
+  border: 1px solid var(--zs-pill-border); border-radius: var(--zs-r-pill);
   font-size: var(--zs-text-md); font-weight: var(--zs-w-semibold);
   cursor: pointer; white-space: nowrap;
   transition: background var(--zs-dur) var(--zs-ease);
 }
-#zs-switch:hover { background: rgba(255, 255, 255, 0.11); }
+#zs-switch:hover { background: var(--zs-pill-hover-bg); }
 #zs-switch svg { opacity: 0.55; }
 
 @media (max-width: 560px) {
@@ -588,63 +923,63 @@ html.zs-light .zs-mcp-row:hover, html.zs-light .zs-gear:hover, html.zs-light .zs
 html.zs-light .zs-gear, html.zs-light .zs-mcp-pop-close { color: #6b7280; }
 html.zs-light .zs-mcp-toggle { background: rgba(0, 0, 0, 0.18); }
 
-/* Yellow / black theme for the Switch AI menu and the MCP servers popup.
-   Same palette as .zs-chip (#eab308 on warm near-black). */
+/* Token-driven theme for the Switch AI menu and MCP servers popup.
+   Adapts automatically to each provider's tokens in dark and light mode. */
 #zs-menu, .zs-mcp-pop-card {
-  background: #0e0c06; color: #ece6cf;
-  border-color: rgba(234, 179, 8, 0.35);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(234, 179, 8, 0.06);
+  background: var(--zs-menu-bg); color: var(--zs-content);
+  border-color: var(--zs-pill-border);
+  box-shadow: var(--zs-shadow-menu);
 }
 #zs-mcp-pop { background: rgba(0, 0, 0, 0.55); }
-#zs-menu { scrollbar-color: rgba(234, 179, 8, 0.35) transparent; }
-#zs-menu::-webkit-scrollbar-thumb { background: rgba(234, 179, 8, 0.3); background-clip: padding-box; }
-#zs-menu::-webkit-scrollbar-thumb:hover { background: rgba(234, 179, 8, 0.55); background-clip: padding-box; }
-.zs-menu-head, .zs-mcp-pop-head { border-bottom-color: rgba(234, 179, 8, 0.22); }
-.zs-menu-sec + .zs-menu-sec { border-top-color: rgba(234, 179, 8, 0.16); }
-.zs-menu-logo, .zs-mcp-pop-head { color: #fde68a; }
-.zs-menu-tag, .zs-sec-label span { color: #a38a2a; }
-.zs-menu-note, .zs-mcp-pop-note, .zs-mcp-row-meta, .zs-site-host { color: #8a7a45; }
-.zs-site-name > span:first-child, .zs-mcp-row-name { color: #f3ecd0; }
-.zs-site-opt { color: #d9d1b2; }
+#zs-menu { scrollbar-color: var(--zs-pill-border) transparent; }
+#zs-menu::-webkit-scrollbar-thumb { background: var(--zs-pill-border); background-clip: padding-box; }
+#zs-menu::-webkit-scrollbar-thumb:hover { background: var(--zs-accent-soft); background-clip: padding-box; }
+.zs-menu-head, .zs-mcp-pop-head { border-bottom-color: var(--zs-divider); }
+.zs-menu-sec + .zs-menu-sec { border-top-color: var(--zs-divider); }
+.zs-menu-logo, .zs-mcp-pop-head { color: var(--zs-content); }
+.zs-menu-tag, .zs-sec-label span { color: var(--zs-content-muted); }
+.zs-menu-note, .zs-mcp-pop-note, .zs-mcp-row-meta, .zs-site-host { color: var(--zs-content-muted); }
+.zs-site-name > span:first-child, .zs-mcp-row-name { color: var(--zs-content); }
+.zs-site-opt { color: var(--zs-content); }
 button.zs-site-opt:hover, .zs-mcp-row:hover {
-  background: rgba(234, 179, 8, 0.10);
+  background: var(--zs-pill-bg);
 }
-.zs-site-go { color: #eab308; }
+.zs-site-go { color: var(--zs-accent-soft); }
 .zs-site-badge {
-  color: #eab308; border-color: rgba(234, 179, 8, 0.55);
-  background: rgba(234, 179, 8, 0.08);
+  color: var(--zs-accent-soft); border-color: var(--zs-pill-border);
+  background: var(--zs-pill-bg);
 }
-.zs-target-cur { background: rgba(234, 179, 8, 0.12); }
-.zs-gear, .zs-mcp-pop-close { color: #eab308; opacity: 0.8; }
+.zs-target-cur { background: var(--zs-pill-bg); }
+.zs-gear, .zs-mcp-pop-close { color: var(--zs-accent-soft); opacity: 0.88; }
 .zs-gear:hover, .zs-mcp-pop-close:hover {
-  background: rgba(234, 179, 8, 0.14); color: #fde68a; opacity: 1;
+  background: var(--zs-pill-hover-bg); color: var(--zs-content); opacity: 1;
 }
-.zs-mcp-toggle { background: rgba(234, 179, 8, 0.18); }
-.zs-mcp-toggle::after { background: #fde68a; }
-.zs-mcp-check:checked + .zs-mcp-toggle { background: #eab308; }
-.zs-mcp-check:checked + .zs-mcp-toggle::after { background: #0e0c06; }
-.zs-mcp-check:focus-visible + .zs-mcp-toggle { outline-color: rgba(234, 179, 8, 0.8); }
-.zs-mcp-pop-card #zs-bg-sessions { accent-color: #eab308; }
+.zs-mcp-toggle { background: var(--zs-hairline); }
+.zs-mcp-toggle::after { background: var(--zs-accent-fg); }
+.zs-mcp-check:checked + .zs-mcp-toggle { background: var(--zs-accent); }
+.zs-mcp-check:checked + .zs-mcp-toggle::after { background: var(--zs-accent-fg); }
+.zs-mcp-check:focus-visible + .zs-mcp-toggle { outline-color: var(--zs-accent-soft); }
+.zs-mcp-pop-card #zs-bg-sessions { accent-color: var(--zs-accent); }
 
-/* Light mode: warm cream surface, dark amber accents. */
+/* Light mode menu/popup adjustments */
 html.zs-light #zs-menu, html.zs-light .zs-mcp-pop-card {
-  background: #fffaf0; color: #3b3320; border-color: rgba(180, 130, 10, 0.45);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+  background: var(--zs-menu-bg); color: var(--zs-content); border-color: var(--zs-pill-border);
+  box-shadow: var(--zs-shadow-menu);
 }
 html.zs-light .zs-menu-logo, html.zs-light .zs-mcp-pop-head, html.zs-light .zs-mcp-row-name,
-html.zs-light .zs-site-name > span:first-child { color: #5a3d00; }
+html.zs-light .zs-site-name > span:first-child { color: var(--zs-content); }
 html.zs-light .zs-menu-tag, html.zs-light .zs-sec-label span,
 html.zs-light .zs-menu-note, html.zs-light .zs-mcp-pop-note,
-html.zs-light .zs-mcp-row-meta, html.zs-light .zs-site-host { color: #8a6d1a; }
-html.zs-light .zs-menu-head, html.zs-light .zs-mcp-pop-head { border-bottom-color: rgba(180, 130, 10, 0.25); }
-html.zs-light button.zs-site-opt:hover, html.zs-light .zs-mcp-row:hover { background: rgba(234, 179, 8, 0.16); }
-html.zs-light .zs-site-badge { color: #a16207; border-color: rgba(180, 130, 10, 0.55); background: rgba(234, 179, 8, 0.12); }
-html.zs-light .zs-target-cur { background: rgba(234, 179, 8, 0.18); }
-html.zs-light .zs-gear, html.zs-light .zs-mcp-pop-close { color: #a16207; }
-html.zs-light .zs-gear:hover, html.zs-light .zs-mcp-pop-close:hover { background: rgba(234, 179, 8, 0.18); color: #7a5200; }
-html.zs-light .zs-mcp-toggle { background: rgba(161, 98, 7, 0.22); }
+html.zs-light .zs-mcp-row-meta, html.zs-light .zs-site-host { color: var(--zs-content-muted); }
+html.zs-light .zs-menu-head, html.zs-light .zs-mcp-pop-head { border-bottom-color: var(--zs-divider); }
+html.zs-light button.zs-site-opt:hover, html.zs-light .zs-mcp-row:hover { background: var(--zs-pill-bg); }
+html.zs-light .zs-site-badge { color: var(--zs-accent); border-color: var(--zs-pill-border); background: var(--zs-pill-bg); }
+html.zs-light .zs-target-cur { background: var(--zs-pill-bg); }
+html.zs-light .zs-gear, html.zs-light .zs-mcp-pop-close { color: var(--zs-accent); }
+html.zs-light .zs-gear:hover, html.zs-light .zs-mcp-pop-close:hover { background: var(--zs-pill-hover-bg); color: var(--zs-content); }
+html.zs-light .zs-mcp-toggle { background: var(--zs-hairline); }
 html.zs-light .zs-mcp-toggle::after { background: #ffffff; }
-html.zs-light .zs-mcp-check:checked + .zs-mcp-toggle { background: #ca8a04; }
+html.zs-light .zs-mcp-check:checked + .zs-mcp-toggle { background: var(--zs-accent); }
 
 #zs-set-text {
   width: 100%; box-sizing: border-box; resize: vertical; min-height: 58px;
@@ -759,8 +1094,21 @@ div[contenteditable].zs-typing { caret-color: transparent !important; }
    this never clips real typing. */
 textarea.zs-typing,
 div[contenteditable].zs-typing {
+  /* Keep the site's own input size. Only cap runaway growth during injection;
+     visual size comes from the host, never from a fixed Snapgent height. */
   max-height: 140px !important;
   overflow-y: hidden !important;
+}
+/* While the "Agent is working…" cover is active, lock the editor to its
+   pre-cover height (--zs-lock-h set by ui-controller.js) so injecting large
+   tool outputs (e.g. read_files) cannot grow/shrink the composer and bounce
+   the bar up and down behind the cover. */
+textarea.zs-typing.zs-height-locked,
+div[contenteditable].zs-typing.zs-height-locked {
+  height: var(--zs-lock-h) !important;
+  min-height: var(--zs-lock-h) !important;
+  max-height: var(--zs-lock-h) !important;
+  overflow: hidden !important;
 }
 
 /* ── spinner element ───────────────────────────────────────── */
@@ -846,6 +1194,14 @@ html.zs-site-meta .zs-hidden > .zs-chip {
   max-width: 768px;
 }
 
+/* Gemini tool chips anchor to the wide turn root while result chips anchor to
+   the centered 708px reply column. Seat tool chips on the same column so a
+   `list_tree` chip does not jut out to the left of its own result. */
+html.zs-site-gemini .zs-chip.cat-tool:not(.result):not(.sys) {
+  margin-left: max(0px, calc((100% - min(708px, 100%)) / 2));
+  max-width: min(708px, 100%);
+}
+
 /* Qwen (Ant Design) renders its model / thinking-mode select popup AND the
    composer "+" attachment menu (Upload attachment / Deep Research / Create
    image / Web Dev / Slides / More) at z-index 1050-1150 - far below #zs-root
@@ -866,7 +1222,7 @@ html.zs-site-meta .zs-hidden > .zs-chip {
 .ant-dropdown:has([class*="model-item"]) { z-index: 2147483646 !important; }
 
 /* Kimi (Naive UI) portals its popovers - the model picker (K2.6 Instant /
-   Thinking / Agent / Swarm), the composer "+" toolkit menu (Add files &
+   Thinking / Agent / Sblue), the composer "+" toolkit menu (Add files &
    photos / Presets / Plugins / Skills / Web search), and that same button's
    OWN hover tooltip ("Add files & photos…") - into a
    .v-binder-follower-container at z-index ~20-2001, far below #zs-root
@@ -950,7 +1306,7 @@ ol.flex-col-reverse > div.w-full:not(.mx-auto) > .zs-chip {
    the small head icon, so it stays neutral unless a state class recolours it. */
 .zs-chip {
   --cat: #8b8b93;
-  display: block; width: fit-content; max-width: 100%;
+  display: block; width: fit-content; max-width: min(640px, 100%);
   /* Never stretch to the container width: some sites (Meta AI) render the reply
      body as a flex column, and a block child with `width:fit-content` gets
      stretched to full width by the default `align-items:stretch`. Pinning
@@ -967,38 +1323,37 @@ ol.flex-col-reverse > div.w-full:not(.mx-auto) > .zs-chip {
 }
 .zs-chip:hover { background: rgba(255, 255, 255, 0.06); }
 
-/* Yellow / black theme: matches the bar's Stop button and target pills
-   (#eab308 on near-black). Only the surface, border, label and chevron are
-   themed; done (green) and err (red) keep their own state colours. */
+/* Blue / navy theme. One accent family for every chip, eye-safe on dark chat
+   surfaces; done (green) and err (red) keep their own state colours. */
 .zs-chip {
-  background: rgba(14, 12, 6, 0.92);
-  border-color: rgba(234, 179, 8, 0.35);
-  color: #ece6cf;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  background: rgba(10, 17, 34, 0.94);
+  border-color: rgba(96, 165, 250, 0.32);
+  color: #dbe7f6;
+  box-shadow: 0 2px 10px rgba(3, 8, 20, 0.38);
 }
 .zs-chip:hover {
-  background: rgba(28, 24, 12, 0.97);
-  border-color: rgba(234, 179, 8, 0.75);
+  background: rgba(16, 28, 52, 0.97);
+  border-color: rgba(96, 165, 250, 0.7);
 }
-.zs-chip-tx { color: #fde68a; }
-.zs-chip-cv { color: #eab308; opacity: 0.75; }
+.zs-chip-tx { color: #bfdbfe; }
+.zs-chip-cv { color: #60a5fa; opacity: 0.85; }
 
-/* Outer box around an injected result chip (ChatGPT): same yellow / black theme.
+/* Outer box around an injected result chip (ChatGPT): same blue / navy theme.
    Scoped with :has(.zs-chip) so the user's own typed bubbles keep ChatGPT's look. */
 html.zs-site-chatgpt .zs-hidden:has(.zs-chip),
 html.zs-site-chatgpt .user-message-bubble-color:has(.zs-chip),
 html.zs-site-chatgpt [class*="group/user-message"] [class*="bg-token"]:has(.zs-chip) {
-  background: rgba(20, 17, 8, 0.96) !important;
-  border: 1px solid rgba(234, 179, 8, 0.55) !important;
+  background: rgba(8, 14, 28, 0.96) !important;
+  border: 1px solid rgba(96, 165, 250, 0.45) !important;
   border-radius: 14px !important;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 12px rgba(3, 8, 20, 0.4);
 }
 html.zs-light.zs-site-chatgpt .zs-hidden:has(.zs-chip),
 html.zs-light.zs-site-chatgpt .user-message-bubble-color:has(.zs-chip),
 html.zs-light.zs-site-chatgpt [class*="group/user-message"] [class*="bg-token"]:has(.zs-chip) {
-  background: rgba(255, 248, 225, 0.95) !important;
-  border-color: rgba(180, 130, 10, 0.55) !important;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  background: rgba(239, 246, 255, 0.95) !important;
+  border-color: rgba(37, 99, 235, 0.45) !important;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
 }
 
 .zs-chip-head {
@@ -1012,7 +1367,7 @@ html.zs-light.zs-site-chatgpt [class*="group/user-message"] [class*="bg-token"]:
 .zs-chip-ic svg { width: 16px; height: 16px; }
 .zs-chip-tx { font-weight: 600; letter-spacing: 0.1px; }
 .zs-chip-dt {
-  opacity: 0.6; font-size: 11px; margin-left: 2px; flex: 1;
+  opacity: 0.6; font-size: 11px; margin-left: 2px; flex: 1; min-width: 0;
   font-family: ui-monospace, "Cascadia Code", "Cascadia Mono", monospace;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -1024,14 +1379,21 @@ html.zs-light.zs-site-chatgpt [class*="group/user-message"] [class*="bg-token"]:
 .zs-chip-cv svg { width: 15px; height: 15px; }
 .zs-chip.open .zs-chip-cv { transform: rotate(180deg); }
 
-/* expandable body: real args / output */
+/* expandable body: real args / output (e.g. read_files) — bounded height with
+   internal scroll so expanding large outputs never pushes the composer. */
 .zs-chip-body {
   max-height: 0; overflow: hidden;
+  box-sizing: border-box;
   transition: max-height 0.22s ease;
   border-top: 1px solid transparent;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(96, 165, 250, 0.35) transparent;
 }
 .zs-chip.open .zs-chip-body {
-  max-height: 460px; overflow: auto;
+  max-height: min(320px, 40vh);
+  overflow-y: auto;
+  overflow-x: auto;
+  overscroll-behavior: contain;
   border-top-color: color-mix(in srgb, var(--cat) 20%, transparent);
 }
 .zs-chip-body pre {
@@ -1044,20 +1406,20 @@ html.zs-light.zs-site-chatgpt [class*="group/user-message"] [class*="bg-token"]:
 /* state themes (override category background, keep accent stripe) */
 .zs-chip.done   { --cat: #5cbf9a; }
 .zs-chip.err    { --cat: #ef6b6b; border-color: rgba(239, 68, 68, 0.38); color: #f0b8b8; }
-.zs-chip.result { --cat: #eab308; color: #ece6cf; }
-.zs-chip.sys    { --cat: #eab308; color: #ece6cf; }
-/* Orphaned command we won't execute (e.g. reload left it un-run): neutral grey,
+.zs-chip.result { --cat: #60a5fa; color: #dbe7f6; }
+.zs-chip.sys    { --cat: #60a5fa; color: #dbe7f6; }
+/* Orphaned command we won't execute (e.g. reload left it un-run): neutral slate,
    never a green ✓ that would imply the tool succeeded. */
-.zs-chip.idle   { --cat: #a38a2a; color: #cfc6a6; }
+.zs-chip.idle   { --cat: #64748b; color: #a9b6c8; }
 
 /* running shimmer, seamless: a REPEATING gradient (period = 210px) scrolled by
    exactly one period in LINEAR time, so the last frame is pixel-identical to the
    first - no visible seam or pause between cycles. background-position animates
    only the image; the base colour stays put. */
 .zs-chip.run {
-  background-color: rgba(234, 179, 8, 0.06);
+  background-color: rgba(96, 165, 250, 0.06);
   background-image: linear-gradient(90deg,
-    transparent 0%, rgba(234, 179, 8, 0.14) 50%, transparent 100%);
+    transparent 0%, rgba(96, 165, 250, 0.16) 50%, transparent 100%);
   /* Fixed 210px tile (NOT tied to the chip width), repeated. This is what makes
      the sweep width-independent: when the chip grows as its detail arrives, the
      tile origin doesn't shift, so the gradient no longer "teleports". */
@@ -1088,8 +1450,8 @@ html.zs-light.zs-site-chatgpt [class*="group/user-message"] [class*="bg-token"]:
   width: min(360px, calc(100vw - 24px)); box-sizing: border-box;
   padding: 16px 18px; border-radius: 14px;
   background: #0b0b0c; color: #ececee;
-  border: 1px solid rgba(234, 179, 8, 0.75);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(96, 165, 250, 0.75);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(96, 165, 250, 0.12);
   font-size: 13px; z-index: 2147483601;
   animation: zs-banner-in 0.2s ease-out;
 }
@@ -1097,25 +1459,25 @@ html.zs-light.zs-site-chatgpt [class*="group/user-message"] [class*="bg-token"]:
   from { opacity: 0; transform: translate(-50%, -8px); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
-.zs-banner.limit, .zs-banner.warn { border-left: 1px solid rgba(234, 179, 8, 0.75); }
-.zs-banner-t { font-weight: 700; color: #eab308; margin-bottom: 6px; font-size: 13.5px; }
+.zs-banner.limit, .zs-banner.warn { border-left: 1px solid rgba(96, 165, 250, 0.75); }
+.zs-banner-t { font-weight: 700; color: #60a5fa; margin-bottom: 6px; font-size: 13.5px; }
 .zs-banner-m { color: #b4b4bc; line-height: 1.5; margin-bottom: 14px; }
 .zs-banner-acts { display: flex; gap: 8px; }
 .zs-banner-acts button {
-  flex: 1; height: 34px; padding: 0 12px; border: 1px solid rgba(234, 179, 8, 0.75); border-radius: 18px;
+  flex: 1; height: 34px; padding: 0 12px; border: 1px solid rgba(96, 165, 250, 0.75); border-radius: 18px;
   cursor: pointer; font-size: 12px; font-weight: 700;
-  background: #eab308; color: #000; transition: background 0.14s ease;
+  background: #60a5fa; color: #0b1220; transition: background 0.14s ease;
 }
-.zs-banner-acts button:hover { background: #facc15; }
-.zs-banner-acts .zs-banner-x { background: transparent; color: #eab308; }
-.zs-banner-acts .zs-banner-x:hover { background: rgba(234, 179, 8, 0.12); }
+.zs-banner-acts button:hover { background: #93c5fd; }
+.zs-banner-acts .zs-banner-x { background: transparent; color: #60a5fa; }
+.zs-banner-acts .zs-banner-x:hover { background: rgba(96, 165, 250, 0.12); }
 html.zs-light .zs-banner {
-  background: #fffbeb; color: #1f2937; border-color: #eab308;
+  background: #eff6ff; color: #1f2937; border-color: #60a5fa;
   box-shadow: 0 16px 44px rgba(0, 0, 0, 0.18);
 }
-html.zs-light .zs-banner-t { color: #a16207; }
+html.zs-light .zs-banner-t { color: #1d4ed8; }
 html.zs-light .zs-banner-m { color: #4b5563; }
-html.zs-light .zs-banner-acts .zs-banner-x { color: #a16207; }
+html.zs-light .zs-banner-acts .zs-banner-x { color: #1d4ed8; }
 /* ── first-time onboarding card (bridge missing; pinned top-right) ───────── */
 #zs-setup {
   position: fixed;
@@ -1231,33 +1593,27 @@ html.zs-light .zs-shot-ttl { color: #1d232e; }
    page's effective background is light. Dark mode (the default) is
    untouched.
    ══════════════════════════════════════════════════════════════ */
-/* in-conversation tool/result/sys chips */
+/* in-conversation tool/result/sys chips — blue, light-mode counterpart */
 html.zs-light .zs-chip {
-  color: #2b313d;
-  background: rgba(0, 0, 0, 0.03);
-  border-color: rgba(0, 0, 0, 0.12);
+  color: #1e293b;
+  background: rgba(255, 255, 255, 0.94);
+  border-color: rgba(37, 99, 235, 0.3);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
 }
-html.zs-light .zs-chip:hover { background: rgba(0, 0, 0, 0.055); }
+html.zs-light .zs-chip:hover { background: rgba(239, 246, 255, 0.98); border-color: rgba(37, 99, 235, 0.6); }
 html.zs-light .zs-chip.err { border-color: rgba(220, 38, 38, 0.4); }
 html.zs-light .zs-chip-body pre { color: #2b313d; }
 html.zs-light .zs-chip-body { border-top-color: color-mix(in srgb, var(--cat) 30%, #ffffff); }
 html.zs-light .zs-chip.err { color: #7f1d1d; }
-/* Yellow theme, light mode: dark amber text/accents on the light surface. */
-html.zs-light .zs-chip {
-  border-color: rgba(180, 130, 10, 0.45);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
-}
-html.zs-light .zs-chip:hover { border-color: rgba(180, 130, 10, 0.8); }
-html.zs-light .zs-chip-tx { color: #7a5200; }
-html.zs-light .zs-chip-cv { color: #a16207; }
+html.zs-light .zs-chip-tx { color: #1d4ed8; }
+html.zs-light .zs-chip-cv { color: #2563eb; }
 html.zs-light .zs-chip.result,
-html.zs-light .zs-chip.sys { --cat: #a16207; color: #3b3320; }
-html.zs-light .zs-chip.idle { --cat: #8a6d1a; color: #5a5030; }
-html.zs-light .zs-chip.err { border-color: rgba(220, 38, 38, 0.4); }
+html.zs-light .zs-chip.sys { --cat: #2563eb; color: #1e3a5f; }
+html.zs-light .zs-chip.idle { --cat: #64748b; color: #475569; }
 html.zs-light .zs-chip.run {
-  background-color: rgba(0, 0, 0, 0.04);
+  background-color: rgba(37, 99, 235, 0.05);
   background-image: linear-gradient(90deg,
-    transparent 0%, rgba(0, 0, 0, 0.06) 50%, transparent 100%);
+    transparent 0%, rgba(37, 99, 235, 0.11) 50%, transparent 100%);
   /* MUST re-declare: the light `.zs-chip` base uses the `background` shorthand
      (resets size to auto) at a HIGHER specificity than `.zs-chip.run`, so without
      this the tile falls back to auto (width-tied) and the sweep teleports on
@@ -1267,70 +1623,70 @@ html.zs-light .zs-chip.run {
 }
 html.zs-light .zs-spin { border-color: rgba(0, 0, 0, 0.15); border-top-color: #6b6b73; }
 
-/* status bar + menu + setup card */
+/* status bar + menu + setup card (driven by html.zs-light + per-provider tokens) */
 html.zs-light #zs-bar {
-  background: rgba(255, 255, 255, 0.97);
-  color: #1f2430;
-  border-color: rgba(99, 102, 241, 0.32);
-  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.16);
+  background: var(--zs-bar-bg);
+  color: var(--zs-content);
+  border-color: var(--zs-hairline);
+  box-shadow: var(--zs-shadow-bar);
 }
-html.zs-light .zs-free { color: rgba(31, 36, 48, 0.5); }
-html.zs-light #zs-state { color: #4b5563; }
-html.zs-light #zs-state b { color: #4f46e5; }
-html.zs-light #zs-state.zs-state-warn { color: #b91c1c; }
-html.zs-light #zs-bar.tone-active #zs-state b { color: #059669; }
+html.zs-light .zs-free { color: var(--zs-content-muted); }
+html.zs-light #zs-state { color: var(--zs-content-muted); }
+html.zs-light #zs-state b { color: var(--zs-accent); }
+html.zs-light #zs-state.zs-state-warn { color: var(--zs-signal-error); }
+html.zs-light #zs-bar.tone-active #zs-state b { color: var(--zs-signal-done); }
 html.zs-light #zs-switch,
 html.zs-light .zs-target-wrap {
-  background: rgba(0, 0, 0, 0.05); color: #4b5563;
-  border-color: rgba(180, 130, 10, 0.55);
+  background: var(--zs-pill-bg); color: var(--zs-pill-fg);
+  border-color: var(--zs-pill-border);
 }
-html.zs-light #zs-switch:hover { background: rgba(0, 0, 0, 0.09); color: #1f2430; }
+html.zs-light #zs-switch:hover { background: var(--zs-pill-hover-bg); color: var(--zs-content); }
 html.zs-light #zs-action:disabled {
-  background: rgba(0, 0, 0, 0.05); color: rgba(0, 0, 0, 0.35); border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.05); color: rgba(0, 0, 0, 0.38); border-color: rgba(0, 0, 0, 0.08);
 }
 
 html.zs-light #zs-menu,
 html.zs-light #zs-setup {
-  background: rgba(249, 250, 253, 0.99);
-  color: #1f2430;
-  border-color: rgba(99, 102, 241, 0.30);
-  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
+  background: var(--zs-menu-bg);
+  color: var(--zs-content);
+  border-color: var(--zs-pill-border);
+  box-shadow: var(--zs-shadow-menu);
 }
 html.zs-light .zs-menu-head,
-html.zs-light #zs-setup-head { border-bottom-color: rgba(0, 0, 0, 0.08); }
+html.zs-light #zs-setup-head { border-bottom-color: var(--zs-divider); }
 html.zs-light .zs-menu-logo,
-html.zs-light #zs-setup-logo { color: #1f2430; }
+html.zs-light #zs-setup-logo { color: var(--zs-content); }
 html.zs-light .zs-menu-tag,
-html.zs-light #zs-setup-tag { color: #8a8a92; }
-html.zs-light .zs-menu-sec + .zs-menu-sec { border-top-color: rgba(0, 0, 0, 0.07); }
-html.zs-light .zs-sec-label span { color: #6b6b73; }
-html.zs-light .zs-menu-note { color: #6b7280; }
+html.zs-light #zs-setup-tag { color: var(--zs-content-muted); }
+html.zs-light .zs-menu-sec + .zs-menu-sec { border-top-color: var(--zs-divider); }
+html.zs-light .zs-sec-label span { color: var(--zs-content-muted); }
+html.zs-light .zs-menu-note { color: var(--zs-content-muted); }
 html.zs-light #zs-set-text,
 html.zs-light .zs-mcp-field {
-  background: #ffffff; color: #1f2430; border-color: rgba(0, 0, 0, 0.14);
+  background: #ffffff; color: var(--zs-content); border-color: var(--zs-hairline);
 }
-html.zs-light .zs-mcp-item { background: #ffffff; border-color: rgba(0, 0, 0, 0.1); }
-html.zs-light .zs-mcp-name { color: #1f2430; }
-html.zs-light .zs-mcp-url { color: #6b7280; }
-html.zs-light .zs-mcp-remove { color: #8a8a92; }
-html.zs-light .zs-mcp-remove:hover { background: rgba(0, 0, 0, 0.06); color: #1f2430; }
-html.zs-light .zs-mcp-sep { background: rgba(0, 0, 0, 0.08); }
-html.zs-light .zs-mcp-spin { border-color: rgba(0, 0, 0, 0.15); border-top-color: #4b5563; }
-html.zs-light #zs-setup-sub { color: #4b5563; }
-html.zs-light #zs-setup-steps li { color: #374151; }
-html.zs-light #zs-setup-steps li + li { border-top-color: rgba(0, 0, 0, 0.06); }
-html.zs-light #zs-setup-steps li::before { color: #8a8a92; }
-html.zs-light #zs-setup-steps code { background: rgba(0, 0, 0, 0.06); }
-html.zs-light #zs-setup-dismiss { border-color: rgba(0, 0, 0, 0.12); color: #4b5563; }
-html.zs-light #zs-setup-dismiss:hover { background: rgba(0, 0, 0, 0.05); }
+html.zs-light .zs-mcp-item { background: #ffffff; border-color: var(--zs-hairline); }
+html.zs-light .zs-mcp-name { color: var(--zs-content); }
+html.zs-light .zs-mcp-url { color: var(--zs-content-muted); }
+html.zs-light .zs-mcp-remove { color: var(--zs-content-muted); }
+html.zs-light .zs-mcp-remove:hover { background: var(--zs-pill-bg); color: var(--zs-content); }
+html.zs-light .zs-mcp-sep { background: var(--zs-divider); }
+html.zs-light .zs-mcp-spin { border-color: var(--zs-hairline); border-top-color: var(--zs-content-muted); }
+html.zs-light #zs-setup-sub { color: var(--zs-content-muted); }
+html.zs-light #zs-setup-steps li { color: var(--zs-content); }
+html.zs-light #zs-setup-steps li + li { border-top-color: var(--zs-divider); }
+html.zs-light #zs-setup-steps li::before { color: var(--zs-content-muted); }
+html.zs-light #zs-setup-steps code { background: var(--zs-pill-bg); }
+html.zs-light #zs-setup-dismiss { border-color: var(--zs-hairline); color: var(--zs-content-muted); }
+html.zs-light #zs-setup-dismiss:hover { background: var(--zs-pill-bg); }
 
-/* Menu contents in light theme: neutral grays, subtle surfaces on hover */
-html.zs-light .zs-site-opt { color: #4b5563; }
-html.zs-light .zs-site-name > span:first-child { color: #1f2430; }
-html.zs-light .zs-site-host { color: #9ca3af; }
-html.zs-light button.zs-site-opt:hover { background: rgba(0, 0, 0, 0.05); }
-html.zs-light .zs-site-badge { color: #6b7280; border-color: rgba(0, 0, 0, 0.14); }
-html.zs-light .zs-site-go { color: #9ca3af; }
+/* Menu contents in light theme: token-driven contrast (>= 4.5:1) */
+html.zs-light .zs-site-opt { color: var(--zs-content-muted); }
+html.zs-light .zs-site-name > span:first-child { color: var(--zs-content); }
+html.zs-light .zs-site-host { color: var(--zs-content-muted); }
+html.zs-light button.zs-site-opt:hover { background: var(--zs-pill-bg); }
+html.zs-light .zs-site-badge { color: var(--zs-accent); border-color: var(--zs-pill-border); background: var(--zs-pill-bg); }
+html.zs-light .zs-site-go { color: var(--zs-accent); }
 html.zs-light #zs-set-save,
 html.zs-light #zs-mcp-add {
   background: rgba(0, 0, 0, 0.05); color: #1f2430; border-color: rgba(0, 0, 0, 0.12);
@@ -1339,3 +1695,21 @@ html.zs-light #zs-set-save:hover,
 html.zs-light #zs-mcp-add:hover { background: rgba(0, 0, 0, 0.09); }
 html.zs-light #zs-set-status,
 html.zs-light #zs-mcp-status { color: #6b7280; }
+
+/* ── Accessibility preferences (HIG Accessibility / Motion) ─────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .zs-chip.run { animation: none; background-image: none; }
+  .zs-spin { animation: none; }
+  #zs-bar, .zs-chip, #zs-composer-glow { transition: none; }
+  #zs-composer-glow::before { animation: none; opacity: 0; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  #zs-bar { background: var(--zs-surface) !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+  html.zs-light #zs-bar { background: #f5f8ff !important; }
+}
+@media (prefers-contrast: more) {
+  #zs-bar { border-color: var(--zs-content); }
+  html.zs-light #zs-bar { border-color: #14213a; }
+  #zs-composer-glow { box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.8); }
+  html.zs-light #zs-composer-glow { box-shadow: 0 0 0 2px rgba(37,99,235,.75); }
+}

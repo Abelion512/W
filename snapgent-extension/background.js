@@ -104,6 +104,56 @@ const PROVIDER_CAPABILITIES = {
   manus:    { vision: false, webSearch: false, largeInput: false },
 };
 
+// ── usage-limit aware routing ──────────────────────────────────────────────
+// A provider that reports a quota / rate-limit / free-tier block is sidelined
+// for one cooldown window. The static ladder then falls through to the next
+// open tab instead of sending every later task into the same dead provider.
+// An explicit `provider` pin still wins: callers that test a specific site
+// must be able to see its limit message for themselves.
+const LIMIT_RE = /(quota|rate.?limit|too many requests|free tier|limit reached|usage limit|daily limit|try again in|resets? (?:in|at)|captcha|sign in to continue)/i;
+const LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
+const limitedUntil = new Map(); // provider -> epoch ms
+
+function markProviderLimited(provider, error) {
+  if (!provider || !LIMIT_RE.test(String(error || ""))) return false;
+  limitedUntil.set(provider, Date.now() + LIMIT_COOLDOWN_MS);
+  try {
+    const plain = Object.fromEntries(limitedUntil);
+    const stored = chrome.storage.local.set({ limitedUntil: plain });
+    if (stored && typeof stored.catch === "function") stored.catch(() => {});
+  } catch (e) { /* storage unavailable: in-memory cooldown still applies */ }
+  return true;
+}
+
+function isProviderLimited(provider, now = Date.now()) {
+  const until = limitedUntil.get(provider) || 0;
+  if (until <= now) { limitedUntil.delete(provider); return false; }
+  return true;
+}
+
+// Hydrate the cooldown across MV3 worker evictions (best effort: routing works
+// without it, it just forgets recent limits after a restart).
+try {
+  const got = chrome.storage.local.get("limitedUntil", (r) => {
+    const saved = r && r.limitedUntil;
+    if (saved && typeof saved === "object") {
+      for (const [k, v] of Object.entries(saved)) {
+        if (typeof v === "number" && v > Date.now()) limitedUntil.set(k, v);
+      }
+    }
+  });
+  if (got && typeof got.then === "function") {
+    got.then((r) => {
+      const saved = r && r.limitedUntil;
+      if (saved && typeof saved === "object") {
+        for (const [k, v] of Object.entries(saved)) {
+          if (typeof v === "number" && v > Date.now()) limitedUntil.set(k, v);
+        }
+      }
+    }).catch(() => {});
+  }
+} catch (e) { /* no storage in this context */ }
+
 function routeFor(metadata) {
   const m = metadata && typeof metadata === "object" ? metadata : {};
   // Explicit pin first: one provider, no fallback chain. Used by callers that
@@ -124,6 +174,14 @@ function routeFor(metadata) {
     if (derived) baseRoute = { tier: derived, providers: TIER_PROVIDERS[derived] };
   }
   if (!baseRoute) return null;
+
+  // Sidelining happens BEFORE capability filters so the shortened chain is the
+  // one capability filtering operates on. If every provider in the chain is
+  // limited, keep the original chain: a visible limit message beats silence.
+  if (baseRoute.tier !== "pinned") {
+    const available = baseRoute.providers.filter((id) => !isProviderLimited(id));
+    if (available.length) baseRoute = { ...baseRoute, providers: available };
+  }
 
   const needsVision = m.needsVision === true;
   const needsWeb = m.needsWeb === true;
@@ -162,7 +220,7 @@ function tabForRoute(tabs, route) {
 
 const RECONNECT_MIN = 1000;
 const RECONNECT_MAX = 5000;
-const HEARTBEAT_MS = 10000;
+// Heartbeat is driven by the MV3 chrome.alarms "zs-keepalive" (30s) alarm.
 // If no message (incl. pong) arrives within this window while we believe we're
 // connected, the socket is half-open: force a reconnect instead of letting
 // pending requests slowly time out. Kept at 60s so a very large frame in flight
@@ -219,7 +277,7 @@ let bridgeToken = null; // cached chrome.storage value; null = not read yet
 let connecting = false;
 let reconnectDelay = RECONNECT_MIN;
 let reconnectTimer = null;
-let heartbeatTimer = null;
+const connectionWaiters = new Set();
 let lastMessageAt = 0; // timestamp of the last frame received from the bridge
 let nextId = 1;
 const pending = new Map(); // id -> {resolve, timer}
@@ -321,7 +379,7 @@ async function connect() {
     reconnectDelay = RECONNECT_MIN;
     lastMessageAt = Date.now();
     log("connected to bridge");
-    startHeartbeat();
+    flushConnectionWaiters();
     broadcastStatus();
     refreshBridgeStatus();
   };
@@ -349,7 +407,6 @@ async function connect() {
     bridgeVersion = null;
     bridgeStatusCache = null;
     bridgeStatusAt = 0;
-    stopHeartbeat();
     // A dropped socket will never deliver prompt_result or cancel_prompt.
     promptTabs.clear();
     failAllPending("bridge connection closed");
@@ -378,61 +435,64 @@ function scheduleReconnect() {
   reconnectDelay = Math.min(reconnectDelay * 1.7, RECONNECT_MAX);
 }
 
-function startHeartbeat() {
-  stopHeartbeat();
-  heartbeatTimer = setInterval(() => {
-    if (!connected) return;
-    // Shared rule from core/guard.js: elapsed time alone is not proof of a dead
-    // socket (an idle MV3 worker is suspended). Probe first, close only when no
-    // pong arrives. The rule is imported, not copied, so tests pin what runs.
-    const decision = ZSGuard.heartbeatDecision({ lastMessageAt, staleMs: STALE_SOCKET_MS });
-    if (decision.shouldProbe) {
-      send({ type: "ping" }, 4000).then((pong) => {
-        const answered = !!(pong && (pong.type === "pong" || pong.ok));
-        const final = ZSGuard.heartbeatDecision({
-          lastMessageAt, staleMs: STALE_SOCKET_MS, pongAnswered: answered,
-        });
-        if (final.close) {
-          log("socket stale, forcing reconnect");
-          try { ws.close(); } catch {}
-        }
-      }).catch(() => {
-        const final = ZSGuard.heartbeatDecision({
-          lastMessageAt, staleMs: STALE_SOCKET_MS, pongAnswered: false,
-        });
-        if (final.close) {
-          log("socket stale, forcing reconnect");
-          try { ws.close(); } catch {}
-        }
+function flushConnectionWaiters() {
+  for (const fn of [...connectionWaiters]) {
+    connectionWaiters.delete(fn);
+    try { fn(); } catch {}
+  }
+}
+
+// Driven by the MV3 chrome.alarms "zs-keepalive" alarm (no setInterval).
+function runHeartbeatTick() {
+  if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+  // Shared rule from core/guard.js: elapsed time alone is not proof of a dead
+  // socket (an idle MV3 worker is suspended). Probe first, close only when no
+  // pong arrives. The rule is imported, not copied, so tests pin what runs.
+  const decision = (typeof ZSGuard !== "undefined" && ZSGuard.heartbeatDecision)
+    ? ZSGuard.heartbeatDecision({ lastMessageAt, staleMs: STALE_SOCKET_MS })
+    : { shouldProbe: false };
+  if (decision.shouldProbe) {
+    send({ type: "ping" }, 4000).then((pong) => {
+      const answered = !!(pong && (pong.type === "pong" || pong.ok));
+      const final = ZSGuard.heartbeatDecision({
+        lastMessageAt, staleMs: STALE_SOCKET_MS, pongAnswered: answered,
       });
-      return;
-    }
-    // Keeps the MV3 service worker alive AND detects a half-open socket.
-    send({ type: "ping" }).catch(() => {});
-    refreshStudioStatus();
-  }, HEARTBEAT_MS);
-}
-
-function stopHeartbeat() {
-  clearInterval(heartbeatTimer);
-  heartbeatTimer = null;
-}
-
-// Resolve once the socket is OPEN, or false after `timeout` ms.
-function waitForConnection(timeout = 8000) {
-  return new Promise((resolve) => {
-    if (connected && ws && ws.readyState === WebSocket.OPEN) return resolve(true);
-    connect(); // nudge a (re)connection - important after a worker wake-up
-    const t0 = Date.now();
-    const iv = setInterval(() => {
-      if (connected && ws && ws.readyState === WebSocket.OPEN) {
-        clearInterval(iv);
-        resolve(true);
-      } else if (Date.now() - t0 > timeout) {
-        clearInterval(iv);
-        resolve(false);
+      if (final.close) {
+        log("socket stale, forcing reconnect");
+        try { ws.close(); } catch {}
       }
-    }, 100);
+    }).catch(() => {
+      const final = ZSGuard.heartbeatDecision({
+        lastMessageAt, staleMs: STALE_SOCKET_MS, pongAnswered: false,
+      });
+      if (final.close) {
+        log("socket stale, forcing reconnect");
+        try { ws.close(); } catch {}
+      }
+    });
+    return;
+  }
+  try { ws.send(JSON.stringify({ type: "ping", id: `ka-${Date.now()}` })); } catch {}
+  if (lastMessageAt > 0) setTimeout(refreshStudioStatus, 0);
+}
+
+// Resolve once the socket is OPEN, or false after `timeout` ms (event-driven).
+function waitForConnection(timeout = 8000) {
+  if (connected && ws && ws.readyState === WebSocket.OPEN) return Promise.resolve(true);
+  connect(); // nudge a (re)connection - important after a worker wake-up
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      connectionWaiters.delete(onOpen);
+      resolve(ok);
+    };
+    const onOpen = () => finish(true);
+    const timer = setTimeout(() => finish(!!(connected && ws && ws.readyState === WebSocket.OPEN)), timeout);
+    connectionWaiters.add(onOpen);
+    if (connected && ws && ws.readyState === WebSocket.OPEN) finish(true);
   });
 }
 
@@ -831,8 +891,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           ok: !!msg.ok,
           error: msg.ok ? "" : String(msg.error || "").slice(0, 120),
         });
+        if (!msg.ok) {
+          markProviderLimited(lastUsage && lastUsage.provider, msg.error);
+        }
         await send({ type: "prompt_result", prompt_id: msg.promptId,
                      ok: !!msg.ok, text: msg.text || "", error: msg.error || "" }, 15000);
+        sendResponse({ ok: true });
+        break;
+      }
+      case "a2a_chunk": {
+        if (msg.promptId && msg.text && ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({
+              type: "prompt_chunk",
+              prompt_id: msg.promptId,
+              text: String(msg.text),
+            }));
+          } catch {}
+        }
         sendResponse({ ok: true });
         break;
       }
@@ -855,5 +931,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 // refuses to dial while parked, so these stay unconditional.
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
+
+// MV3 service-worker keepalive for long sessions (Brave suspends idle workers).
+if (typeof chrome !== "undefined" && chrome.alarms) {
+  try {
+    chrome.alarms.create("zs-keepalive", { periodInMinutes: 0.5 });
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (!alarm || alarm.name !== "zs-keepalive") return;
+      if (!connected && !authRequired) connect();
+      else runHeartbeatTick();
+    });
+  } catch {}
+}
 
 connect();

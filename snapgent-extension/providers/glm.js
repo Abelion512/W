@@ -180,24 +180,21 @@ const ZSProvider = (() => {
   const isFreshChat = () =>
     chatIsEmpty() && /^\/?$/.test(location.pathname) && !!getEditor();
 
-  // The composer box the Start gate hides as one unit.
-  const composerFrame = () =>
-    document.querySelector(S.composer) ||
-    (getEditor() ? getEditor().closest("form, .relative") : null);
-
   // Integrated status bar (same approach as Kimi): GLM is a Svelte app that
   // reconciles the composer subtree, so we must NOT insert our #zs-bar into it
   // (a foreign node in a framework-managed parent risks the diff nesting the
-  // composer inside the bar). barAnchor() returns the rounded composer CARD - the
-  // `flex flex-col … rounded-xl` ancestor of the textarea, which holds the input
-  // box then the toolbar row - and the core (placeBar anchored branch) keeps the
-  // bar in #zs-root, positions it to hug that card's top edge at full width, and
-  // reserves the strip with padding-top. Validated live: full width, hugs top,
-  // pushes the input down with no overlap.
+  // composer inside the bar). barAnchor() returns the rounded composer CARD -
+  // shared with composerFrame() so glow, Start gate, and padding-top target
+  // the exact same element.
   function barAnchor() {
     const ed = getEditor();
-    return (ed && ed.closest('.flex-col[class*="rounded"]')) || null;
+    return (
+      (ed && ed.closest('.flex-col[class*="rounded"]')) ||
+      document.querySelector(S.composer) ||
+      (ed ? ed.closest("form, .relative") : null)
+    );
   }
+  const composerFrame = () => barAnchor();
 
   // ── Input lock ────────────────────────────────────────────────────────────
   // The textarea is a real <textarea>: `readonly` blocks the user but is ignored

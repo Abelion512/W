@@ -114,26 +114,18 @@ const ZSProvider = (() => {
   const isFreshChat = () => chatIsEmpty() && !!getEditor();
   const composerFrame = () => {
     const editor = getEditor();
-    return editor && (editor.closest("form") || editor.parentElement);
+    if (!editor) return null;
+    const form = editor.closest("form");
+    if (form) return form;
+    let card = null;
+    for (let el = editor.parentElement, i = 0; el && el !== document.body && i < 12; el = el.parentElement, i++) {
+      const cs = getComputedStyle(el);
+      if (parseFloat(cs.borderTopLeftRadius) >= 14) card = el;
+    }
+    return card || editor.parentElement;
   };
   const barMount = () => {
-    const frame = composerFrame();
-    // Mount ABOVE the whole composer card (outside it) so the bar never overlaps
-    // the editor's placeholder row. The card is the nearest ancestor of the
-    // editor with a large radius or a border. The radius check must NOT require
-    // a border: the 2026-11 card (.bg-surface-3) is borderless at radius 14px,
-    // and with the border clause the walk stopped at an inner wrapper instead -
-    // the bar then mounted INSIDE the card and collided with the placeholder
-    // (measured live: "Ready." rendered under "How can I help you today?").
-    let card = frame;
-    const editor = getEditor();
-    for (let el = editor, i = 0; el && el !== document.body && i < 12; el = el.parentElement, i++) {
-      const cs = getComputedStyle(el);
-      if (parseFloat(cs.borderTopLeftRadius) >= 14 || parseFloat(cs.borderTopWidth) > 0) {
-        card = el;
-        break;
-      }
-    }
+    const card = composerFrame();
     return card && card.parentElement ? { parent: card.parentElement, before: card } : null;
   };
 

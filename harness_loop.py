@@ -31,7 +31,9 @@ A2A_URL = "http://127.0.0.1:17614/"
 TOKEN_PATH = Path.home() / ".snapgent" / "a2a_token"
 LEDGER_DIR = Path(os.environ.get("ZS_LOOP_DIR", str(Path(__file__).resolve().parent / ".snapgent" / "loops")))
 MAX_OUTPUT_CHARS = 3000
-DEFAULT_TIMEOUT = 600
+# Must not be shorter than the A2A server deadline: a client-side 600s cap
+# killed tasks while the web model was still working (>7 min runs are normal).
+DEFAULT_TIMEOUT = 1800
 
 
 def _tail(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
@@ -165,6 +167,7 @@ def run_loop(
     checks: Iterable[str] = (),
     category: str = "code-edit",
     tier: str = "balanced",
+    provider: str = "",
     max_iterations: int = 3,
     context_only: bool = False,
     verify: Optional[Callable[[Iterable[str]], List[Dict[str, Any]]]] = None,
@@ -186,6 +189,8 @@ def run_loop(
             "modelTier": tier,
             "contextFiles": files,
         }
+        if provider:
+            metadata["provider"] = provider
         if context_only:
             metadata["contextOnly"] = True
         reply = submit(prompt, metadata)
@@ -300,18 +305,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--check", action="append", default=[])
     parser.add_argument("--category", default="code-edit")
     parser.add_argument("--tier", default="balanced")
+    parser.add_argument("--provider", default="", help="pin one A2A provider (e.g. gemini)")
     parser.add_argument("--iterations", type=int, default=3)
     parser.add_argument("--context-only", action="store_true")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     args = parser.parse_args(argv)
 
     result = run_loop(
-        a2a_submit,
+        lambda prompt, metadata: a2a_submit(prompt, metadata, timeout=args.timeout),
         goal=args.goal,
         files=args.file,
         checks=args.check,
         category=args.category,
         tier=args.tier,
+        provider=args.provider,
         max_iterations=max(1, args.iterations),
         context_only=args.context_only,
         verify=lambda commands: run_checks(commands, timeout=args.timeout),
