@@ -163,8 +163,65 @@ const ZSProviderBase = (() => {
     return (ed.innerText || ed.textContent || "").trim();
   }
 
+  const COMMAND_SHAPE_RE = /"(?:command|tool)"\s*:\s*"|###\s*(?:lua|mcp_tool)/i;
+
+  async function waitFor(predicate, timeout) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      if (predicate()) return true;
+      await sleep(120);
+    }
+    return false;
+  }
+
+  function findToolBlockSpot(root) {
+    if (!root || !root.querySelectorAll) return null;
+    let found = null;
+    root.querySelectorAll("pre,code,p,li").forEach((el) => {
+      if (el.closest(".zs-chip, .zs-tool-hide")) return;
+      const text = (el.textContent || "").trim();
+      if (text && COMMAND_SHAPE_RE.test(text)) {
+        el.classList.add("zs-tool-hide");
+        found = found || { parent: el.parentElement, ref: el };
+      }
+    });
+    return found;
+  }
+
+  function installStandardSendHooks(opts) {
+    return function installSendHooks(handlers) {
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+        const editor = opts.getEditor();
+        if (!editor || !(editor === event.target || editor.contains(event.target)) ||
+            !opts.editorText().trim() || handlers.isBlocked()) return;
+        if (!handlers.isStarted()) {
+          if (opts.chatIsEmpty()) handlers.onBlockedAttempt();
+          return;
+        }
+        handlers.onUserMessage(opts.assistantCount());
+      }, true);
+      document.addEventListener("click", (event) => {
+        const target = event.target;
+        const button = target && target.closest ? target.closest("button,[role='button']") : null;
+        if (!button || !opts.getEditor()) return;
+        if (opts.stopButton() === button) {
+          handlers.onNativeStop();
+          return;
+        }
+        if (opts.sendButton() !== button || button.disabled ||
+            button.getAttribute("aria-disabled") === "true" || handlers.isBlocked()) return;
+        if (!handlers.isStarted()) {
+          if (opts.chatIsEmpty()) handlers.onBlockedAttempt();
+          return;
+        }
+        handlers.onUserMessage(opts.assistantCount());
+      }, true);
+    };
+  }
+
   function createProvider(spec) {
-    const api = Object.assign({}, spec);
+    const api = Object.defineProperties({}, Object.getOwnPropertyDescriptors(spec || {}));
     if (!api.assistantItems && api.allItems && api.isAssistantItem) {
       api.assistantItems = () => api.allItems().filter(api.isAssistantItem);
     }
@@ -217,6 +274,9 @@ const ZSProviderBase = (() => {
     watchStopButton,
     setNativeValue,
     defaultEditorText,
+    waitFor,
+    findToolBlockSpot,
+    installStandardSendHooks,
     createProvider,
   };
 })();

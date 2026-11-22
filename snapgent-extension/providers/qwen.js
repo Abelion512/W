@@ -33,7 +33,8 @@
 // eslint-disable-next-line no-unused-vars
 const ZSProvider = (() => {
   "use strict";
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const B = ZSProviderBase;
+  const sleep = B.sleep;
   let diag = () => {};
 
   const S = {
@@ -485,20 +486,10 @@ const ZSProvider = (() => {
     const bd = bodyEl(item);
     return bd ? textWithout(bd, ".zs-chip") : "";
   }
-  const streamLen = (item) =>
-    streamText(item === undefined ? lastAssistant() : item).length;
-
-  let _streamMax = -1, _streamAt = 0, _streamItem = null;
-  function sampleStream() {
-    const item = lastAssistant();
-    const len = streamText(item).length;
-    const now = Date.now();
-    if (item !== _streamItem || len < _streamMax - 400) {
-      _streamItem = item; _streamMax = len; _streamAt = now; return;
-    }
-    if (len > _streamMax) { _streamMax = len; _streamAt = now; }
-  }
-  const grewWithin = (ms) => _streamMax > 1 && Date.now() - _streamAt < ms;
+  const _stream = B.createStreamTracker(streamText, lastAssistant, { minGrow: 1 });
+  const streamLen = _stream.streamLen;
+  const sampleStream = _stream.sampleStream;
+  const grewWithin = _stream.grewWithin;
 
   // Core hook: is the LATEST turn's text still an unsettled read? Only the A/B
   // "dual" turn is at risk - the network tap flips `done` when the SSE ends, but
@@ -962,7 +953,7 @@ const ZSProvider = (() => {
     try { _modelCapObs.observe(document.body, { subtree: true, childList: true }); } catch {}
   }
 
-  return {
+  return B.createProvider({
     id: "qwen",
     displayName: "Qwen",
     // DYNAMIC per selected model (see the capability section above). A getter so
@@ -1010,5 +1001,5 @@ const ZSProvider = (() => {
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,
-  };
+  });
 })();

@@ -59,7 +59,8 @@
 // eslint-disable-next-line no-unused-vars
 const ZSProvider = (() => {
   "use strict";
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const B = ZSProviderBase;
+  const sleep = B.sleep;
   let diag = () => {}; // injected by core via init()
 
   const S = {
@@ -1177,7 +1178,7 @@ const ZSProvider = (() => {
     return hidAny;
   }
 
-  return {
+  return B.createProvider({
     id: "chatgpt",
     displayName: "ChatGPT",
     timings,
@@ -1252,5 +1253,5 @@ const ZSProvider = (() => {
     // every result over ~109k even though ChatGPT would accept the pair fine.
     // The margin absorbs the rider growing with a long user custom prompt.
     sendCharBudget: SEND_HARD_CAP - 4000,
-  };
+  });
 })();

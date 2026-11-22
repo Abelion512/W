@@ -25,7 +25,8 @@
 // eslint-disable-next-line no-unused-vars
 const ZSProvider = (() => {
   "use strict";
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const B = ZSProviderBase;
+  const sleep = B.sleep;
   let diag = () => {}; // injected by core via init()
 
   const S = {
@@ -202,19 +203,14 @@ const ZSProvider = (() => {
     const md = item.querySelector(S.reply);
     return (think ? think.textContent || "" : "") + "\n" + (md ? textWithout(md, ".zs-chip") : "");
   }
-  const streamLen = (item) => streamText(item === undefined ? lastAssistant() : item).length;
-
-  let _streamMax = -1, _streamAt = 0, _streamItem = null;
+  const _stream = B.createStreamTracker(streamText, lastAssistant, { minGrow: 1 });
+  const streamLen = _stream.streamLen;
+  let _streamAt = 0;
   function sampleStream() {
-    const item = lastAssistant();
-    const len = streamText(item).length;
-    const now = Date.now();
-    if (item !== _streamItem || len < _streamMax - 400) {
-      _streamItem = item; _streamMax = len; _streamAt = now; return;
-    }
-    if (len > _streamMax) { _streamMax = len; _streamAt = now; }
+    const snap = _stream.sampleStream();
+    _streamAt = snap.at;
   }
-  const grewWithin = (ms) => _streamMax > 1 && Date.now() - _streamAt < ms;
+  const grewWithin = _stream.grewWithin;
 
   // CRITICAL Gemini quirk (validated live): the stop button can WEDGE in the ON
   // state after a generation finishes - the icon stays "stop" with the text
@@ -764,7 +760,7 @@ const ZSProvider = (() => {
     return hidAny;
   }
 
-  return {
+  return B.createProvider({
     id: "gemini",
     displayName: "Gemini",
     // Gemini's web model is natively multimodal (image understanding), so
@@ -822,7 +818,7 @@ const ZSProvider = (() => {
       isCancelDialogOpen,
       unwedgeStop,
       genActive,
-      resetStreamState: () => { _streamMax = -1; _streamAt = 0; _streamItem = null; _stopSince = 0; },
+      resetStreamState: () => { _stream.reset(); _streamAt = 0; _stopSince = 0; },
     },
-  };
+  });
 })();
