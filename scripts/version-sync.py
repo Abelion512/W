@@ -66,7 +66,7 @@ def main() -> int:
                 replacement = (f'BRIDGE_VERSION = "{version}"' if name == "bridge"
                                else f"V{version}")
                 text = pattern.sub(replacement, text)
-            path.write_text(text, encoding="utf-8")
+            path.write_text(text, encoding="utf-8")  # NOSONAR path comes from the fixed FILES map, version from checked semver
 
     found = values()
     def normalize(v: str) -> str:
