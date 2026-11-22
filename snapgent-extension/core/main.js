@@ -946,6 +946,9 @@
     /Extension context invalidated|Receiving end does not exist|message port closed/i.test(m || "");
 
   function bg(msg) {
+    if (msg && msg.type === "call_tool" && a2aCurrentId && !msg.promptId) {
+      msg = { ...msg, promptId: a2aCurrentId };
+    }
     return new Promise((resolve) => {
       const fail = (m) => resolve({
         ok: false,
@@ -4341,7 +4344,7 @@
           // card is rounded. Keep a soft minimum so the ring hugs the unit.
           const now = performance.now();
           if (gf !== glowNode || now - glowAt > 500) {
-            const rawRadius = parseInt(getComputedStyle(gf).borderRadius, 10);
+            const rawRadius = Number.parseInt(getComputedStyle(gf).borderRadius, 10);
             glowRadius = (rawRadius > 0 ? Math.min(rawRadius, 24) : 18) + "px";
             glowBg = opaqueBg(gf);
             glowNode = gf;
