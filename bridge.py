@@ -1440,7 +1440,7 @@ def build_a2a_server(bridge: "Bridge", loop: asyncio.AbstractEventLoop) -> Any:
     )
     server_ref[0] = server
     bridge._a2a_server = server
-    if bridge._disconnect_grace == 0.0:
+    if bridge._disconnect_grace <= 0.0:
         raw_grace = (os.environ.get("ZS_DISCONNECT_GRACE_SECONDS") or "15").strip()
         try:
             bridge._disconnect_grace = max(0.0, float(raw_grace))

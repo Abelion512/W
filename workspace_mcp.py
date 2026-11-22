@@ -267,7 +267,12 @@ def _worktree_git_dir(root: Path) -> Optional[Path]:
     if common_file.is_file():
         try:
             common_rel = common_file.read_text(encoding="utf-8", errors="strict").strip()
-            common = (gitdir / common_rel).resolve()
+            relative = Path(common_rel)
+            if relative.is_absolute() or "\x00" in common_rel:
+                return None
+            common = (gitdir / relative).resolve()
+            if not common.is_relative_to(gitdir.parent.parent):
+                return None
             if common.is_dir() and (common / "HEAD").is_file() and common.name == ".git":
                 return common
         except (OSError, UnicodeDecodeError):

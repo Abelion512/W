@@ -17,6 +17,7 @@ Token resolution: --token, ZS_A2A_TOKEN, then ~/.snapgent/a2a_token.
 import argparse
 import json
 import os
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -36,6 +37,19 @@ def token_from_args_or_env(arg: Optional[str]) -> str:
         return path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def validate_url(url: str) -> str:
+    """Only allow the local bridge; the URL comes from LLM-supplied CLI args."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "http" or parsed.hostname not in LOOPBACK_HOSTS:
+        raise SystemExit(f"refusing non-loopback A2A URL: {url!r}")
+    if parsed.username or parsed.password or parsed.fragment:
+        raise SystemExit(f"refusing credentialed A2A URL: {url!r}")
+    return url
 
 
 def rpc(url: str, token: str, method: str, params: Dict[str, Any], rpc_id: int = 1) -> Dict[str, Any]:
@@ -65,14 +79,15 @@ def main() -> int:
     parser.add_argument("--create", action="store_true", help="return immediately, poll with --get")
     args = parser.parse_args()
 
+    url = validate_url(args.url)
     token = token_from_args_or_env(args.token)
     if not token:
         parser.error("no A2A token: set ZS_A2A_TOKEN or create ~/.snapgent/a2a_token")
 
     if args.cancel:
-        result = rpc(args.url, token, "tasks/cancel", {"id": args.cancel})
+        result = rpc(url, token, "tasks/cancel", {"id": args.cancel})
     elif args.get:
-        result = rpc(args.url, token, "tasks/get", {"id": args.get})
+        result = rpc(url, token, "tasks/get", {"id": args.get})
     elif args.prompt:
         metadata: Dict[str, Any] = {"timeoutMs": args.timeout_ms}
         catalog_path = Path(__file__).resolve().parent.parent / "docs" / "model-catalog.json"
@@ -112,14 +127,14 @@ def main() -> int:
                 "providers": [p.strip() for p in args.orchestrate.split(",") if p.strip()],
                 "configuration": {"returnImmediately": args.create},
             }
-            result = rpc(args.url, token, "tasks/orchestrate", params)
+            result = rpc(url, token, "tasks/orchestrate", params)
         else:
             params = {
                 "message": message,
                 "metadata": metadata,
                 "configuration": {"returnImmediately": args.create},
             }
-            result = rpc(args.url, token, "SendMessage", params)
+            result = rpc(url, token, "SendMessage", params)
     else:
         parser.error("provide a prompt, --get TASK_ID or --cancel TASK_ID")
 

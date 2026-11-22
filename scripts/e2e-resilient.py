@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -69,8 +70,24 @@ def ensure_bridge_service(service_name: str = "snapgent-bridge.service") -> dict
     return {"ok": True, "initial_state": initial_state, "restarted": restarted}
 
 
+def validate_loopback_url(url: str) -> str:
+    """Restrict network targets to the local bridge; args may come from an LLM."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise SystemExit(f"refusing non-loopback URL: {url!r}")
+    if parsed.username or parsed.password or parsed.fragment:
+        raise SystemExit(f"refusing credentialed URL: {url!r}")
+    return url
+
+
+def validate_cdp_port(port: int) -> int:
+    if not isinstance(port, int) or not 1 <= port <= 65535:
+        raise SystemExit(f"invalid CDP port: {port!r}")
+    return port
+
+
 def cdp_http(cdp_port: int, path: str, method: str = "GET"):
-    url = f"http://127.0.0.1:{cdp_port}{path}"
+    url = f"http://127.0.0.1:{validate_cdp_port(cdp_port)}{path}"
     req = urllib.request.Request(url, method=method)
     with urllib.request.urlopen(req, timeout=10) as resp:
         raw = resp.read().decode("utf-8")
@@ -121,6 +138,7 @@ def a2a_send_task(
     timeout: float = 600.0,
 ) -> dict:
     """Send a SendMessage JSON-RPC request over the A2A HTTP facade."""
+    a2a_url = validate_loopback_url(a2a_url)
     if not token_path.exists():
         return {"ok": False, "error": f"token file not found: {token_path}", "seconds": 0.0}
 
@@ -207,6 +225,7 @@ def a2a_cancel_task(
     token_path: Path = TOKEN_PATH,
 ) -> None:
     """Best-effort cleanup via tasks/cancel if an attempt timed out or failed."""
+    a2a_url = validate_loopback_url(a2a_url)
     if not task_id or not token_path.exists():
         return
     token = token_path.read_text(encoding="utf-8").strip()
@@ -240,8 +259,15 @@ def cleanup_attempt(task_id: str | None, temp_dir: Path | None) -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+SAFE_CHECK_RE = re.compile(
+    r'^printf "%s" "\$E2E_LAST_REPLY" \| grep -qi "[A-Za-z0-9_ .-]+"$'
+)
+
+
 def run_shell_check(check_cmd: str, reply_text: str) -> dict:
-    """Execute the caller-supplied shell verification command with the reply text."""
+    """Run a fixed-shape reply check; arbitrary shell from CLI args is refused."""
+    if not SAFE_CHECK_RE.fullmatch(check_cmd):
+        raise SystemExit(f"refusing unsafe check command: {check_cmd!r}")
     env = os.environ.copy()
     env["E2E_LAST_REPLY"] = reply_text
     proc = subprocess.run(
