@@ -293,6 +293,15 @@
   // race it against a slow stop-poll (the stop path is not latency-critical).
   async function waitVisible() {
     if (!document.hidden || A.stop) return !A.stop;
+    // A bridge-driven A2A task must never park: the caller is waiting on this
+    // exact tab, and fan-out pins one task per provider tab. Parking here was
+    // what made a deep task in a background tab stall until the caller timed
+    // out, and what dropped the result of a tab that lost focus mid-task. The
+    // manual-session opt-in below stays off by default for user-driven work.
+    if (a2aCurrentId) {
+      diag("park.skipped.a2a", { promptId: a2aCurrentId });
+      return !A.stop;
+    }
     // Multi-tab opt-in: a hidden tab may keep working. Read the flag through the
     // awaitable so a session started immediately after load cannot race it.
     if (await backgroundSessionsReady()) {
@@ -536,7 +545,7 @@
       // "No response from <site>", and orphan the pending command.
       // Upstream a4b831b: with Background sessions on, parkHidden() returns at
       // once and the loop re-parks forever without ever reading the reply.
-      if (document.hidden && !A.stop && !(await backgroundSessionsReady())) {
+      if (document.hidden && !A.stop && !a2aCurrentId && !(await backgroundSessionsReady())) {
         const parked = await parkHidden();
         if (A.stop) return { kind: "stopped" };
         if (parked) {
@@ -895,7 +904,19 @@
       // The site caps output length and shows a native "Continue" button when it
       // truncates. We try clicking it directly (same turn) in the loop.
       if (P.findContinueBtn()) return { kind: "truncated", text: r, item: d.item };
-      if (r === "") { diag("empty.why", { branch: "finalBlank" }); return { kind: "empty" }; }
+      if (r === "") {
+        // A provider can cut generation short (Rudder's ~10s cap) and show its
+        // OWN limit notice while the assistant turn stays blank. Reporting a
+        // bare "empty reply" threw that reason away. Carry the site's text so
+        // the caller learns the real cause instead of retrying blindly.
+        const siteError = P.scanError ? (P.scanError() || "") : "";
+        if (siteError) {
+          diag("empty.why", { branch: "finalBlank", detail: siteError.slice(0, 160) });
+          return { kind: "context_limit", detail: siteError };
+        }
+        diag("empty.why", { branch: "finalBlank" });
+        return { kind: "empty" };
+      }
       return { kind: "text", text: r };
     }
     return { kind: "timeout" };
@@ -925,6 +946,9 @@
     /Extension context invalidated|Receiving end does not exist|message port closed/i.test(m || "");
 
   function bg(msg) {
+    if (msg && msg.type === "call_tool" && a2aCurrentId && !msg.promptId) {
+      msg = { ...msg, promptId: a2aCurrentId };
+    }
     return new Promise((resolve) => {
       const fail = (m) => resolve({
         ok: false,
@@ -3138,9 +3162,13 @@
   //  UI  (control panel, onboarding, stop button, banners, toast, input cover)
   // ════════════════════════════════════════════════════════════════════════
   const ui = (() => {
-    let root, bar, stateEl, actionBtn, stopBtn, targetSelect, switchBtn, menuEl, unstableEl;
+    let root, bar, stateEl, actionBtn, stopBtn, targetSelect, targetWrap, switchBtn, menuEl, unstableEl;
     let targetBtn, targetMenuEl;
     let cover, coverRaf, barRaf;
+    // placeBar runs every frame. Sampling computed styles and walking ancestors
+    // on each frame is measurable work on a busy chat page, so cache the two
+    // composer-derived values and refresh them at most twice per second.
+    let glowNode = null, glowAt = 0, glowRadius = "18px", glowBg = "";
     let openMenuFn = null; // set by build(); lets the popup force the panel open via runtime message
     let bridgeOk = false, workspaceReady = false, workspaceProbePending = false, workspaceProbeAt = 0;
     let workspaceProbeFails = 0;
@@ -3179,6 +3207,7 @@
       // menu (other AI sites and options). No floating panel,
       // no overlay on the input - the composer stays fully usable for plain chat.
       root.innerHTML = `
+        <div id="zs-composer-glow" aria-hidden="true"></div>
         <div id="zs-bar">
           <span id="zs-state"></span>
           <button id="zs-action"></button>
@@ -3203,6 +3232,7 @@
       actionBtn = root.querySelector("#zs-action");
       stopBtn = root.querySelector("#zs-stop");
       targetSelect = root.querySelector("#zs-target");
+      targetWrap = root.querySelector(".zs-target-wrap");
       targetBtn = root.querySelector("#zs-target-btn");
       targetMenuEl = root.querySelector("#zs-target-menu");
       switchBtn = root.querySelector("#zs-switch");
@@ -3253,6 +3283,12 @@
       actionBtn.addEventListener("click", onActionClick);
       stopBtn.addEventListener("click", stopLoop);
       unstableEl = root.querySelector("#zs-unstable");
+      if (unstableEl && stateEl) {
+        // Keep the warning INSIDE the control bar. A fixed pill floating above
+        // the composer covered site modals and menus on every provider.
+        stateEl.appendChild(unstableEl);
+        unstableEl.hidden = false;
+      }
       if (unstableEl) {
         // Set the native tooltip via PROPERTY, not the HTML template: the warning
         // text may contain double quotes (e.g. GLM's "No response…"), which would
@@ -3390,6 +3426,9 @@
           options.push({ id, name: id });
         }
       }
+      // A one-target bridge has nothing to choose: hide the redundant `repo`
+      // pill and keep the bar quiet. It reappears when another server is added.
+      if (targetWrap) targetWrap.hidden = options.length <= 1;
       const optionsKey = options.map((option) => `${option.id}:${option.name}`).join("|");
       if (targetSelect.dataset.optionsKey !== optionsKey) {
           targetSelect.innerHTML = options
@@ -4239,7 +4278,7 @@
     }
 
     // Floating fallback geometry (used only when no inline mount is available).
-    const BAR_MAX_W = 560, BAR_GAP = 8;
+    const BAR_MAX_W = 560, BAR_GAP = 2; // flush against the composer on every site
 
     // Anchored mode bookkeeping: the composer element whose top padding we are
     // borrowing to seat the bar (see the anchored branch below). Cleared when we
@@ -4267,6 +4306,68 @@
 
     function placeBar() {
       barRaf = requestAnimationFrame(placeBar);
+      // Composer halo: a soft ring that follows the site's input box, so the
+      // Snapgent band reads as attached to the composer on every provider.
+      // Purely decorative and click-through; colour comes from the theme CSS.
+      const glow = root && root.querySelector("#zs-composer-glow");
+      if (glow) {
+        const gf = P.composerFrame && P.composerFrame();
+        // Always ring the visible composer card, including the site's own
+        // controls (DeepThink, Search). Those belong to the same input unit;
+        // cutting them off made the band look incomplete.
+        const gr = gf && gf.isConnected ? gf.getBoundingClientRect() : null;
+        // Size the in-flow bar FIRST, then measure it. Otherwise a full-column
+        // bar can fail the adjacency test and never be aligned to the composer.
+        if (gr && bar.classList.contains("zs-bar-inline") && !bar.classList.contains("zs-bar-inside")) {
+          const pr = bar.parentElement && bar.parentElement.getBoundingClientRect();
+          bar.style.width = Math.round(gr.width) + "px";
+          if (pr) bar.style.marginLeft = Math.round(gr.left - pr.left) + "px";
+        }
+        const br2 = bar.getBoundingClientRect();
+        const adjacent = gr && br2.width > 40 && br2.height > 8 &&
+          Math.abs(br2.bottom - gr.top) < 32 &&
+          br2.left < gr.right && br2.right > gr.left;
+        if (gr && gr.width > 40 && gr.height > 8 && gr.height < 420) {
+          // One unit: ring the UNION of the control bar and the composer, not
+          // the input alone. The bar borrows the composer's own surface and
+          // drops its bottom corners so the two read as one connected band.
+          const left = adjacent ? Math.min(gr.left, br2.left) : gr.left;
+          const right = adjacent ? Math.max(gr.right, br2.right) : gr.right;
+          const top = adjacent ? Math.min(gr.top, br2.top) : gr.top;
+          const bottom = adjacent ? Math.max(gr.bottom, br2.bottom) : gr.bottom;
+          glow.style.display = "block";
+          glow.style.left = Math.round(left) + "px";
+          glow.style.top = Math.round(top) + "px";
+          glow.style.width = Math.round(right - left) + "px";
+          glow.style.height = Math.round(bottom - top) + "px";
+          // Some composers report 0px (square inner node) even when the visible
+          // card is rounded. Keep a soft minimum so the ring hugs the unit.
+          const now = performance.now();
+          if (gf !== glowNode || now - glowAt > 500) {
+            const rawRadius = Number.parseInt(getComputedStyle(gf).borderRadius, 10);
+            glowRadius = (rawRadius > 0 ? Math.min(rawRadius, 24) : 18) + "px";
+            glowBg = opaqueBg(gf);
+            glowNode = gf;
+            glowAt = now;
+          }
+          glow.style.borderRadius = glowRadius;
+          if (adjacent) {
+            bar.classList.add("zs-bar-unified");
+            bar.style.background = glowBg;
+          } else {
+            bar.classList.remove("zs-bar-unified");
+            bar.style.background = "";
+            bar.style.width = "";
+            bar.style.marginLeft = "";
+          }
+        } else {
+          glow.style.display = "none";
+          bar.classList.remove("zs-bar-unified");
+          bar.style.background = "";
+          bar.style.width = "";
+          bar.style.marginLeft = "";
+        }
+      }
       if (!bar) return;
 
       // Self-heal: a SPA navigation or a full re-render on the host (seen on Arena
@@ -4278,12 +4379,6 @@
       if (root && !root.isConnected) {
         try { document.documentElement.appendChild(root); } catch {}
       }
-
-      // The instability warning floats just ABOVE the bar (not inside it), so it
-      // never crowds the row on narrow composers like Gemini. Positioned from the
-      // bar's current rect every frame - works in all bar modes since it only
-      // reads where the bar ended up. One frame of lag is imperceptible.
-      placeUnstable();
 
       // While a bot-check challenge OR a blocking modal (login / consent) is on
       // screen, get fully out of the way: the (often transparent) anchored bar is
@@ -4342,7 +4437,7 @@
         const bh = bar.offsetHeight || 34;
         if (anchorPadEl && anchorPadEl !== anchorEl) clearAnchorPad();
         anchorPadEl = anchorEl;
-        anchorEl.style.paddingTop = (bh + 6) + "px"; // reserve the strip the bar sits in (+gap)
+        anchorEl.style.paddingTop = (bh + 2) + "px"; // reserve the strip the bar sits in (+gap)
         bar.style.left = Math.round(r.left) + "px";
         bar.style.top = Math.round(r.top) + "px";
         bar.style.width = Math.round(r.width) + "px";

@@ -104,6 +104,56 @@ const PROVIDER_CAPABILITIES = {
   manus:    { vision: false, webSearch: false, largeInput: false },
 };
 
+// ── usage-limit aware routing ──────────────────────────────────────────────
+// A provider that reports a quota / rate-limit / free-tier block is sidelined
+// for one cooldown window. The static ladder then falls through to the next
+// open tab instead of sending every later task into the same dead provider.
+// An explicit `provider` pin still wins: callers that test a specific site
+// must be able to see its limit message for themselves.
+const LIMIT_RE = /(quota|rate.?limit|too many requests|free tier|limit reached|usage limit|daily limit|try again in|resets? (?:in|at)|captcha|sign in to continue)/i;
+const LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
+const limitedUntil = new Map(); // provider -> epoch ms
+
+function markProviderLimited(provider, error) {
+  if (!provider || !LIMIT_RE.test(String(error || ""))) return false;
+  limitedUntil.set(provider, Date.now() + LIMIT_COOLDOWN_MS);
+  try {
+    const plain = Object.fromEntries(limitedUntil);
+    const stored = chrome.storage.local.set({ limitedUntil: plain });
+    if (stored && typeof stored.catch === "function") stored.catch(() => {});
+  } catch (e) { /* storage unavailable: in-memory cooldown still applies */ }
+  return true;
+}
+
+function isProviderLimited(provider, now = Date.now()) {
+  const until = limitedUntil.get(provider) || 0;
+  if (until <= now) { limitedUntil.delete(provider); return false; }
+  return true;
+}
+
+// Hydrate the cooldown across MV3 worker evictions (best effort: routing works
+// without it, it just forgets recent limits after a restart).
+try {
+  const got = chrome.storage.local.get("limitedUntil", (r) => {
+    const saved = r && r.limitedUntil;
+    if (saved && typeof saved === "object") {
+      for (const [k, v] of Object.entries(saved)) {
+        if (typeof v === "number" && v > Date.now()) limitedUntil.set(k, v);
+      }
+    }
+  });
+  if (got && typeof got.then === "function") {
+    got.then((r) => {
+      const saved = r && r.limitedUntil;
+      if (saved && typeof saved === "object") {
+        for (const [k, v] of Object.entries(saved)) {
+          if (typeof v === "number" && v > Date.now()) limitedUntil.set(k, v);
+        }
+      }
+    }).catch(() => {});
+  }
+} catch (e) { /* no storage in this context */ }
+
 function routeFor(metadata) {
   const m = metadata && typeof metadata === "object" ? metadata : {};
   // Explicit pin first: one provider, no fallback chain. Used by callers that
@@ -124,6 +174,14 @@ function routeFor(metadata) {
     if (derived) baseRoute = { tier: derived, providers: TIER_PROVIDERS[derived] };
   }
   if (!baseRoute) return null;
+
+  // Sidelining happens BEFORE capability filters so the shortened chain is the
+  // one capability filtering operates on. If every provider in the chain is
+  // limited, keep the original chain: a visible limit message beats silence.
+  if (baseRoute.tier !== "pinned") {
+    const available = baseRoute.providers.filter((id) => !isProviderLimited(id));
+    if (available.length) baseRoute = { ...baseRoute, providers: available };
+  }
 
   const needsVision = m.needsVision === true;
   const needsWeb = m.needsWeb === true;
@@ -422,7 +480,7 @@ function stopHeartbeat() {
 function waitForConnection(timeout = 8000) {
   return new Promise((resolve) => {
     if (connected && ws && ws.readyState === WebSocket.OPEN) return resolve(true);
-    connect(); // nudge a (re)connection - important after a worker wake-up
+    connect().catch(() => {}); // nudge a (re)connection - important after a worker wake-up
     const t0 = Date.now();
     const iv = setInterval(() => {
       if (connected && ws && ws.readyState === WebSocket.OPEN) {
@@ -751,7 +809,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "status":
         // Self-heal after a worker wake-up, but never while parked on a refused
         // token: an open tab polls this every 5 s and would redial each time.
-        if (!connected && !authRequired) connect();
+        if (!connected && !authRequired) connect().catch(() => {});
         else refreshBridgeStatus(); // stale-guarded (5 s), fire-and-forget
         if (bridgeToken === null) bridgeToken = await readBridgeToken();
         sendResponse(statusObj());
@@ -783,7 +841,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "call_tool": {
         const timeout = (msg.timeout || 120000) + 10000;
         const r = await send(
-          { type: "call_tool", name: msg.name, arguments: msg.arguments, timeout: msg.timeout, server: msg.server },
+          { type: "call_tool", name: msg.name, arguments: msg.arguments, timeout: msg.timeout, server: msg.server, promptId: msg.promptId },
           timeout
         );
         sendResponse(r);
@@ -831,6 +889,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           ok: !!msg.ok,
           error: msg.ok ? "" : String(msg.error || "").slice(0, 120),
         });
+        if (!msg.ok) {
+          markProviderLimited(lastUsage && lastUsage.provider, msg.error);
+        }
         await send({ type: "prompt_result", prompt_id: msg.promptId,
                      ok: !!msg.ok, text: msg.text || "", error: msg.error || "" }, 15000);
         sendResponse({ ok: true });
@@ -841,7 +902,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         authRequired = false; // the popup may have just saved a valid token
         chrome.storage.local.remove(AUTH_STATE_KEY);
         bridgeToken = null; // re-read: the popup may have just saved a token
-        connect();
+        connect().catch(() => {});
         sendResponse({ ok: true });
         break;
       default:
@@ -856,4 +917,4 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 
-connect();
+connect().catch(() => {});

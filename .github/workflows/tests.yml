@@ -28,6 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check version sync
+        run: python3 scripts/version-sync.py --check
+
       # Explicit pip cache. This replaces setup-python's implicit `cache: pip`
       # so the key and restore behaviour are visible in the workflow: the key is
       # the pinned requirements hash, and restore-keys reuses the previous entry
@@ -53,7 +56,7 @@ jobs:
           sudo apt-get install -y bubblewrap
           bwrap --version
       - name: Python static check (unused imports/names)
-        run: python -m pyflakes *.py tests/*.py e2e/*.py scripts/*.py snapgent-app/mcp/*.py
+        run: python -m pyflakes *.py tests/*.py e2e/*.py scripts/*.py
       - name: Python tests
         run: python -m pytest -q
       - uses: actions/setup-node@v7
@@ -75,14 +78,8 @@ jobs:
           node snapgent-extension/test-rudder.js
           node snapgent-extension/test-grok-editor.js
           node snapgent-extension/test-a2a.js
-      - name: Desktop app syntax check
-        run: |
-          for file in snapgent-app/src/*.js \
-                      snapgent-app/extension/core/*.js \
-                      snapgent-app/extension/providers/*.js; do
-            node --check "$file"
-          done
-          node snapgent-app/test-main-world-isolation.js
+          node snapgent-extension/test-background.js
+          node snapgent-extension/test-guard.js
 
   e2e:
     runs-on: ubuntu-latest

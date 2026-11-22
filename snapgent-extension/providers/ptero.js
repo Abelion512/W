@@ -169,11 +169,23 @@ const ZSProvider = (() => {
     const editor = getEditor();
     if (!editor) throw new Error("Ptero input box not found");
     const beforeUsers = userCount();
-    setTextareaValue(editor, text);
-    const ready = await waitFor(() => {
-      const button = sendButton();
-      return !!button && !button.disabled && button.getAttribute("aria-disabled") !== "true";
-    }, 10000);
+    // A cold page hydrates AFTER first paint. A write that lands before Ptero's
+    // own state is live gets wiped by the next render, so its Send button never
+    // mounts and the prompt is refused. Write until the text STICKS, then wait
+    // for the button - the same sticky-write fix proven on Rudder.
+    let ready = false;
+    for (let attempt = 0; attempt < 24 && !ready; attempt++) {
+      if (!editorText().trim()) {
+        setTextareaValue(editor, text);
+        await sleep(600);
+        continue;
+      }
+      ready = await waitFor(() => {
+        const button = sendButton();
+        return !!button && !button.disabled && button.getAttribute("aria-disabled") !== "true";
+      }, 4000);
+      if (!ready) await sleep(300);
+    }
     const button = sendButton();
     if (!ready || !button || button.disabled ||
         button.getAttribute("aria-disabled") === "true") {

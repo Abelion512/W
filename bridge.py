@@ -89,6 +89,14 @@ ROTATE_CLOSE_REASON = "bridge token rotated; reconnect with the new token"
 
 # Large payloads serialize off the event loop so one slow frame cannot block pings.
 MAX_CONCURRENT_REQUESTS = 32
+# Requests that change bridge state must prove possession of the token even
+# when the sender spoofs an allowed chrome-extension:// Origin.
+PRIVILEGED_REQUESTS = frozenset({"add_server", "remove_server", "rotate_token", "restart_mcp"})
+MAX_PENDING_FRAMES = 128
+ALLOWED_PROVIDER_KEYS = frozenset({
+    "deepseek", "gemini", "chatgpt", "claude", "kimi", "glm", "qwen",
+    "arena", "meta", "grok", "mistral", "rudder", "ptero", "manus", "default",
+})
 BIG_PAYLOAD_THREAD_BYTES = 256 * 1024
 
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -413,6 +421,44 @@ class MCPServer:
             raise
 
 
+# Defence-in-depth for the "HARD STOP before web search" prompt rule in
+# snapgent-extension/core/config.js. The prompt is advisory (the model can miss
+# it); this is the enforced half. It fires only when a prompt actually intends
+# a web search, so ordinary project work that mentions an email in a file is
+# never blocked.
+_WEB_SEARCH_INTENT = re.compile(
+    r"\b(web\s*search|search\s+the\s+(web|internet)|google\s+(it|this|for)|"
+    r"look\s+it\s+up\s+online|search\s+online|browse\s+the\s+web|"
+    r"find\s+(?:the\s+)?(?:current|latest|recent)|look\s+up|research\s+online)\b",
+    re.IGNORECASE,
+)
+_PII_PATTERNS = {
+    "email address": re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
+    "phone number": re.compile(r"(?<!\w)(?:\+\d[\d\s().-]{7,}\d)(?!\w)"),
+    "API token or key": re.compile(
+        r"\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|"
+        r"(?:api[_-]?key|token|secret)\s*[:=]\s*[\w-]{12,})\b",
+        re.IGNORECASE,
+    ),
+    "private file path": re.compile(r"(?:/home/|/Users/|[A-Za-z]:[\\/]Users[\\/])[^\s]+", re.IGNORECASE),
+}
+
+
+def web_search_pii_violations(prompt: str, metadata: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Return PII categories present when a prompt asks for a web search.
+
+    Empty list means the prompt is allowed. ``metadata.webSearch`` forces the
+    guard on for callers that already know a search is involved.
+    """
+    if not isinstance(prompt, str) or not prompt:
+        return []
+    meta = metadata or {}
+    forced = bool(meta.get("webSearch") or meta.get("needsWeb") or meta.get("needs_web"))
+    if not forced and not _WEB_SEARCH_INTENT.search(prompt):
+        return []
+    return [name for name, pattern in _PII_PATTERNS.items() if pattern.search(prompt)]
+
+
 class Bridge:
     def __init__(self, token: Optional[str] = None) -> None:
         self.servers: Dict[str, MCPServer] = {}
@@ -425,19 +471,21 @@ class Bridge:
         self.token = token
         self._reject_log: Dict[str, Tuple[float, int]] = {}
         self._rotate_lock = asyncio.Lock()
-        # A2A delegation: one browser tab, one generation.
+        # A2A delegation. Fan-out: one lock PER PROVIDER, so tasks pinned to
+        # different chat tabs can run at the same time while two tasks for the
+        # same tab still queue (a tab has only one composer).
         self._pending_prompts: Dict[str, asyncio.Future] = {}
-        self._prompt_lock = asyncio.Lock()
-        # The socket a pending prompt belongs to. Only that socket may resolve it:
-        # a reply is trusted only from the socket the prompt was delivered to.
-        # `self.clients` membership requires the bridge token handshake (see
-        # handle_client), so prompt delivery is restricted to authenticated
-        # extension sockets.
-        self._prompt_owner: Any = None
+        self._prompt_locks: Dict[str, asyncio.Lock] = {}
+        # prompt_id -> authenticated socket it was delivered to. Only that socket
+        # may resolve the task. `self.clients` membership requires the bridge
+        # token handshake, so delivery is restricted to authenticated sockets.
+        self._prompt_owners: Dict[str, Any] = {}
+        # websocket -> presented a valid bridge token at handshake
+        self._client_token_auth: Dict[Any, bool] = {}
         self._last_client: Any = None
-        # While a context-only task runs, every tool call is rejected here so a
-        # model cannot reach files outside the context sandbox.
-        self._context_only = False
+        # prompt ids whose context is sandbox-only; tool calls from their owner
+        # socket are rejected while they run.
+        self._context_only_prompts: set = set()
 
     def load_config(self) -> Dict[str, Dict[str, Any]]:
         if not CONFIG_PATH.exists():
@@ -715,24 +763,41 @@ class Bridge:
             if not future.done():
                 future.set_result({"ok": False, "error": reason})
         self._pending_prompts.clear()
-        self._prompt_owner = None
+        self._prompt_owners.clear()
+        self._context_only_prompts.clear()
 
     async def submit_prompt(
         self, prompt: str, timeout: float, metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Delegate one prompt to the browser extension. Single-flight.
+        """Delegate one prompt to the browser extension. Fan-out by provider.
 
-        The deadline covers the queue wait too: a second task that waits for the
-        lock must not start a generation the caller has already given up on.
-        ``metadata`` is forwarded unchanged so the extension can route the task
-        (for example, model tier by task category).
+        Tasks pinned to different providers use different locks and run in
+        parallel against their own chat tabs. Two tasks for the same provider
+        queue. The deadline covers the queue wait too: a task that waits too
+        long never starts a generation the caller has given up on.
+        ``metadata`` is forwarded unchanged so the extension can route the task.
         """
         if not isinstance(prompt, str) or not prompt.strip():
             return {"ok": False, "error": "Empty prompt."}
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         timed_out = {"ok": False, "error": f"The web AI did not answer within {int(timeout)}s."}
-        async with self._prompt_lock:
+        metadata = metadata if isinstance(metadata, dict) else {}
+        violations = web_search_pii_violations(prompt, metadata)
+        if violations:
+            return {
+                "ok": False,
+                "error": (
+                    "HARD STOP: web search blocked - the prompt contains "
+                    + ", ".join(violations)
+                    + ". Strip them or ask the user before searching."
+                ),
+            }
+        provider = str(metadata.get("provider") or "").strip().lower() or "default"
+        # Unknown provider strings must not grow the lock map without bound.
+        lock_key = provider if provider in ALLOWED_PROVIDER_KEYS else "default"
+        lock = self._prompt_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
             remaining = deadline - loop.time()
             if remaining <= 0:
                 return timed_out
@@ -744,7 +809,6 @@ class Bridge:
                 if client is None:
                     return {"ok": False, "error": "No Snapgent extension is connected."}
             prompt_id = f"p{uuid.uuid4().hex}"
-            metadata = metadata if isinstance(metadata, dict) else {}
             # Local until the prompt is actually sent: every early return below
             # (sandbox failure, unreadable files) leaves the bridge without a
             # pending prompt, so it must not leave the flag set for the NEXT
@@ -792,10 +856,15 @@ class Bridge:
                     "[TOOLS DISABLED] This task is context-only: every tool call is "
                     "rejected.\n\n"
                 ) + prompt
+            # Re-check the FINAL prompt: contextFiles content is appended above
+            # and must not smuggle PII into a web-search task.
+            if web_search_pii_violations(prompt, metadata):
+                return {"ok": False, "error": "HARD STOP: web search blocked - the rendered prompt contains personal data."}
             future: asyncio.Future = loop.create_future()
-            self._context_only = context_only
             self._pending_prompts[prompt_id] = future
-            self._prompt_owner = client
+            self._prompt_owners[prompt_id] = client
+            if context_only:
+                self._context_only_prompts.add(prompt_id)
             try:
                 sent = await self._send_client(
                     client,
@@ -821,14 +890,13 @@ class Bridge:
                 return timed_out
             finally:
                 self._pending_prompts.pop(prompt_id, None)
-                self._context_only = False
-                if self._prompt_owner is client:
-                    self._prompt_owner = None
+                self._prompt_owners.pop(prompt_id, None)
+                self._context_only_prompts.discard(prompt_id)
 
     async def _resolve_prompt(self, websocket: Any, request: Dict[str, Any]) -> None:
         prompt_id = request.get("prompt_id")
         # Only the socket the prompt was sent to may resolve it.
-        if websocket is not self._prompt_owner:
+        if websocket is not self._prompt_owners.get(prompt_id):
             await self._send_client(websocket, {"type": "prompt_ack", "id": request.get("id")})
             return
         future = self._pending_prompts.pop(prompt_id, None) if isinstance(prompt_id, str) else None
@@ -854,16 +922,17 @@ class Bridge:
             )
             await self._reject_handshake(websocket, "origin not allowed")
             return
-        # Extensions are trusted on their Origin alone (see token_required_for);
-        # native clients still have to present the token.
-        if self.token and token_required_for(origin):
-            presented = presented_token(websocket)
-            if not presented or not token_matches(presented, self.token):
-                self._log_rejection(
-                    "token", "rejected client with a missing or invalid bridge token"
-                )
-                await self._reject_handshake(websocket, "bridge token required")
-                return
+        # Extensions are trusted on their Origin alone for ordinary prompts,
+        # but privileged state-changing requests still require the token.
+        presented = presented_token(websocket) if self.token else ""
+        has_token = bool(presented and token_matches(presented, self.token))
+        if self.token and token_required_for(origin) and not has_token:
+            self._log_rejection(
+                "token", "rejected client with a missing or invalid bridge token"
+            )
+            await self._reject_handshake(websocket, "bridge token required")
+            return
+        self._client_token_auth[websocket] = has_token
         async with self._client_lock:
             self.clients.add(websocket)
             self._last_client = websocket
@@ -904,6 +973,12 @@ class Bridge:
                 if not isinstance(request, dict):
                     await self._send_client(websocket, {"type": "error", "error": "Request must be a JSON object."})
                     continue
+                if len(pending) >= MAX_PENDING_FRAMES:
+                    await self._send_client(
+                        websocket,
+                        {"type": "error", "error": "Too many in-flight requests."},
+                    )
+                    continue
                 task = asyncio.create_task(_run(request))
                 pending.add(task)
                 task.add_done_callback(pending.discard)
@@ -912,19 +987,27 @@ class Bridge:
                 task.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
+            self._client_token_auth.pop(websocket, None)
             async with self._client_lock:
                 self.clients.discard(websocket)
                 remaining = bool(self.clients)
             # Fail prompts owned by the departing socket even when other
             # clients remain: otherwise the caller waits the full timeout on
             # an owner that will never answer.
-            if not remaining or self._prompt_owner is websocket:
+            if not remaining or any(owner is websocket for owner in self._prompt_owners.values()):
                 self._fail_pending_prompts("The extension disconnected.")
             log("extension disconnected")
 
     async def _handle_request(self, websocket: Any, request: Dict[str, Any]) -> None:
         request_id = request.get("id")
         kind = request.get("type")
+        if kind in PRIVILEGED_REQUESTS and self.token and not self._client_token_auth.get(websocket):
+            await self._send_client(
+                websocket,
+                {"id": request_id, "ok": False,
+                 "error": "Bridge token required for this operation."},
+            )
+            return
         if kind == "ping":
             await self._send_client(websocket, {"type": "pong", "id": request_id})
         elif kind == "list_tools":
@@ -1001,7 +1084,9 @@ class Bridge:
                 {"type": "tool_result", "id": request_id, "ok": False, "error": "Invalid tool call."},
             )
             return
-        if self._context_only and websocket is self._prompt_owner:
+        prompt_id = request.get("promptId")
+        if (isinstance(prompt_id, str) and prompt_id in self._context_only_prompts
+                and self._prompt_owners.get(prompt_id) is websocket):
             await self._send_client(
                 websocket,
                 {

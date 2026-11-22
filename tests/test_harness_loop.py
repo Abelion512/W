@@ -99,6 +99,11 @@ class HarnessLoopTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("bridge offline", result["attempts"][0]["error"])
 
+    def test_default_timeout_covers_long_model_tasks(self):
+        # A 600s client cap killed >7 min tasks while the model was still
+        # working; the client deadline must outlast the A2A server deadline.
+        self.assertGreaterEqual(harness_loop.DEFAULT_TIMEOUT, 1800)
+
 
 if __name__ == "__main__":
     unittest.main()

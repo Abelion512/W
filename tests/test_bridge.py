@@ -13,6 +13,36 @@ from unittest.mock import AsyncMock, patch
 import bridge
 
 
+class WebSearchPiiGuardTests(unittest.TestCase):
+    def test_blocks_pii_when_web_search_is_intended(self):
+        violations = bridge.web_search_pii_violations(
+            "Search the web for jane.doe@example.com and report what you find."
+        )
+        self.assertIn("email address", violations)
+
+    def test_allows_same_pii_without_search_intent(self):
+        self.assertEqual(
+            bridge.web_search_pii_violations("Summarize jane.doe@example.com in the file."),
+            [],
+        )
+
+    def test_metadata_flag_forces_guard(self):
+        violations = bridge.web_search_pii_violations(
+            "Look up this account: sk-abcdefghijklmnopqrst", {"webSearch": True}
+        )
+        self.assertIn("API token or key", violations)
+
+    def test_submit_prompt_refuses_pii_web_search_without_connecting(self):
+        async def run():
+            manager = bridge.Bridge()
+            result = await manager.submit_prompt(
+                "Please search online for john.doe@example.com", 5
+            )
+            self.assertFalse(result["ok"])
+            self.assertIn("HARD STOP", result["error"])
+        asyncio.run(run())
+
+
 def _close_code(error):
     """Close code of a ConnectionClosed, without the deprecated .code accessor.
 
@@ -387,6 +417,22 @@ class BridgeAuthTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([entry.name for entry in Path(temp_dir).iterdir()], ["bridge_token"])
 
     @unittest.skipIf(bridge.websockets is None, "websockets package is not installed")
+    async def test_privileged_request_needs_token_despite_allowed_origin(self):
+        manager = bridge.Bridge("secret-token")
+        async with bridge.websockets.serve(manager.handle_client, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            base = f"ws://127.0.0.1:{port}"
+            async with bridge.websockets.connect(
+                base, additional_headers={"Origin": "chrome-extension://evil"}
+            ) as client:
+                self.assertEqual(json.loads(await client.recv())["type"], "connected")
+                await client.send(json.dumps({"type": "add_server", "id": 9,
+                                              "server_id": "x", "command": "echo"}))
+                reply = json.loads(await client.recv())
+                self.assertFalse(reply["ok"])
+                self.assertIn("token", reply["error"].lower())
+
+    @unittest.skipIf(bridge.websockets is None, "websockets package is not installed")
     async def test_rotated_token_replaces_the_old_one_for_new_connections(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "bridge_token"
@@ -614,6 +660,34 @@ class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(await asyncio.wait_for(task, 2), {"ok": True, "text": "world"})
 
+    async def test_fanout_pins_different_providers_in_parallel(self):
+        manager = bridge.Bridge()
+        client = FakeClient()
+        manager.clients.add(client)
+        first = asyncio.create_task(
+            manager.submit_prompt("research", 5, {"provider": "gemini"})
+        )
+        await self._await_send(client)
+        second = asyncio.create_task(
+            manager.submit_prompt("critic", 5, {"provider": "deepseek"})
+        )
+        # The second prompt must go out while the first is still unanswered.
+        for _ in range(200):
+            if len(client.sent) == 2:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(len(client.sent), 2)
+        self.assertEqual(client.sent[0]["metadata"]["provider"], "gemini")
+        self.assertEqual(client.sent[1]["metadata"]["provider"], "deepseek")
+        for sent, text in zip(client.sent, ("RESEARCH", "CRITIC")):
+            await manager._handle_request(
+                client,
+                {"id": 1, "type": "prompt_result", "prompt_id": sent["id"],
+                 "ok": True, "text": text},
+            )
+        self.assertEqual(await asyncio.wait_for(first, 2), {"ok": True, "text": "RESEARCH"})
+        self.assertEqual(await asyncio.wait_for(second, 2), {"ok": True, "text": "CRITIC"})
+
     async def test_context_only_flag_does_not_leak_after_a_sandbox_failure(self):
         # The flag tells the next tool call to be rejected while a context-only
         # prompt is in flight. A prompt that fails BEFORE it is sent must not
@@ -626,7 +700,7 @@ class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
                 "hello", 5, {"contextOnly": True, "contextFiles": ["definitely-missing.txt"]}
             )
         self.assertFalse(result["ok"])
-        self.assertFalse(manager._context_only)
+        self.assertFalse(manager._context_only_prompts)
         self.assertEqual(client.sent, [])
 
     async def test_submit_prompt_prepends_context_sandbox(self):
@@ -684,11 +758,24 @@ class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
                 "type": "call_tool",
                 "name": "read_file",
                 "arguments": {"path": "README.md"},
+                "promptId": sent["id"],
             },
         )
         rejection = [m for m in client.sent if m.get("type") == "tool_result"][-1]
         self.assertFalse(rejection["ok"])
         self.assertEqual(rejection["kind"], "context_only")
+        # A tool call from another prompt on the same socket is not gated.
+        await manager._handle_request(
+            client,
+            {
+                "id": 12,
+                "type": "call_tool",
+                "name": "read_file",
+                "arguments": {"path": "README.md"},
+            },
+        )
+        unrelated = [m for m in client.sent if m.get("type") == "tool_result"][-1]
+        self.assertNotEqual(unrelated.get("kind"), "context_only")
         await manager._handle_request(
             client,
             {
@@ -700,7 +787,7 @@ class PromptDelegationTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(await asyncio.wait_for(task, 2), {"ok": True, "text": "ok"})
-        self.assertFalse(manager._context_only)
+        self.assertFalse(manager._context_only_prompts)
 
     async def test_context_only_does_not_block_other_clients(self):
         """A context-only task must not take tools away from unrelated tabs."""

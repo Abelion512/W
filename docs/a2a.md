@@ -285,13 +285,25 @@ a2a_agents:
     auth:
       type: bearer
       token: "<contents of ~/.snapgent/a2a_token>"
-    timeout: 600
+    timeout: 1800
 ```
 
 `timeout` is in seconds and defaults to 120 in Hermes. Set it at or above
-`ZS_A2A_TIMEOUT_MS` (default 600000 ms); otherwise Hermes gives up on a slow
-provider while the task keeps running here. Then call `a2a_call` with
+`ZS_A2A_TIMEOUT_MS` (default 1800000 ms / 30 min); otherwise Hermes gives up on
+a slow provider while the task keeps running here. Then call `a2a_call` with
 `agent: webmcp`.
+
+**Hermes metadata gap.** The Hermes `a2a_call` plugin has been seen calling the
+server with no `metadata`, which drops provider and tier routing. Until that
+plugin is patched, pass metadata explicitly with the in-repo client:
+
+```
+python3 scripts/a2a_call.py "Review docs/a2a.md" --tier balanced --provider gemini
+```
+
+The helper always sends a `metadata` object (including `timeoutMs`) and accepts
+`--provider`, `--tier` and `--category`. It also exposes `tasks/cancel` and
+`tasks/orchestrate` through `--cancel` and `--orchestrate`.
 
 ### Other harnesses
 
@@ -337,6 +349,37 @@ with DeepThink and web Search on, and ChatGPT with Think on. Set the DeepSeek
 and ChatGPT modes in the site UI before starting the bridge. Gemini's adapter
 restores 4 Hydrogen + High at session startup; DeepSeek's adapter leaves Search
 as the user set it.
+
+## Fan-out
+
+`bridge.py` holds one queue lock per `metadata.provider`, not one global lock.
+Two tasks pinned to different providers run in parallel in their own chat tabs;
+two tasks for the same provider queue behind each other. Prompt ids own their
+result socket, so a reply from another tab cannot resolve a task. Enable
+`zsBackgroundSessions` (and reload the provider tabs) when fan-out runs while
+the harness tab is in front. The bridge still needs one extension socket, so
+the fan-out ceiling is the number of open provider tabs, not the number of
+HTTP callers.
+
+## Long tasks, cancel and orchestration
+
+- A single task can run for more than seven minutes. The default deadline is
+  30 minutes (`ZS_A2A_TIMEOUT_MS`, capped per task by `metadata.timeoutMs`).
+  `tasks/get` includes `status.progress.elapsedSeconds` while a task is
+  SUBMITTED or WORKING, so a poller can tell a live task from a dead one.
+- `tasks/cancel` (alias `CancelTask`) flips a live task to `TASK_STATE_CANCELED`
+  and a late bridge reply cannot overwrite that state. A terminal task cannot
+  be canceled. The browser tab may keep generating until it finishes; the
+  bridge already asks the extension to stop on its own deadline.
+- `tasks/orchestrate` (alias `Orchestrate`) runs one prompt on several pinned
+  providers in parallel and returns the first successful reply. It takes
+  `params.providers` (2–8 names) and the same `message`/`metadata` as
+  `SendMessage`. It relies on the bridge's per-provider fan-out, so two
+  different providers use two different chat tabs.
+
+```
+python3 scripts/a2a_call.py "Summarize this" --orchestrate gemini,deepseek
+```
 
 ## Testing
 
