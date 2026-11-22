@@ -75,7 +75,7 @@ const ZSChannel = (() => {
       return Promise.resolve(sendFn({ type: "status" })).then(handleStatus);
     }
 
-    pollNow();
+    pollNow().catch(() => {});
     timerId = setIntervalFn(pollNow, intervalMs);
     return { stop, pollNow, handleStatus };
   }
@@ -100,7 +100,7 @@ const ZSChannel = (() => {
         });
       }
       if (msg.type === "zs-open-menu" && h.onOpenMenu) {
-        h.onOpenMenu(false);
+        h.onOpenMenu(msg.atBottom ?? false);
       }
       if (msg.type === "zs-a2a-prompt" && h.onA2APrompt) {
         h.onA2APrompt(msg.prompt, msg.promptId);

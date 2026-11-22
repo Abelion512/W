@@ -89,8 +89,13 @@ const ZSA2ARunner = (() => {
       return false;
     }
 
+    function freshChatReady() {
+      if (!P.chatIsEmpty()) return false;
+      return typeof P.getEditor === "function" ? !!P.getEditor() : true;
+    }
+
     async function openFreshChat() {
-      if (P.chatIsEmpty()) return true;
+      if (freshChatReady()) return true;
       const controlDeadline = Date.now() + 10000;
       let control = null;
       while (!(control = findNewChatControl(doc))) {
@@ -101,9 +106,9 @@ const ZSA2ARunner = (() => {
       const started = Date.now();
       while (Date.now() - started < 12000) {
         await sleep(250);
-        if (P.chatIsEmpty() && (!P.getEditor || P.getEditor())) return true;
+        if (freshChatReady()) return true;
       }
-      return P.chatIsEmpty();
+      return freshChatReady();
     }
 
     function abort(reason) {
