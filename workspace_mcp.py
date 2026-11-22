@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 import fnmatch
+import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -872,6 +875,28 @@ def git_create_pr(title: str, body: str = "", base: str = "") -> str:
 
 
 
+def _assert_command_contained(command: str, extra_args: List[str], root: Path) -> None:
+    """Reject explicit path traversal and out-of-root executables.
+
+    run_command is RCE by design, but it claims the workspace as its boundary.
+    Every process goes through ``_run_process`` → ``_sandboxed_argv`` (bwrap is
+    mandatory, so absolute host paths in *arguments* are already masked by the
+    sandbox — rejecting them would break legitimate sandbox checks such as
+    ``ls /home``). The two things worth catching here are traversal segments,
+    and an executable path that points outside the workspace.
+    """
+    for value in [command, *extra_args]:
+        if not value or value.startswith("-"):
+            continue
+        if ".." in re.split(r"[/\\]", value):
+            raise ValueError(f"Path escapes workspace root: {value}")
+    executable = Path(command.strip())
+    if executable.is_absolute() or len(executable.parts) > 1:
+        resolved = executable.resolve() if executable.is_absolute() else (root / executable).resolve()
+        if not _inside_root(resolved, root):
+            raise ValueError(f"Command path escapes workspace root: {command}")
+
+
 def run_command(
     command: str,
     args: Optional[List[str]] = None,
@@ -891,6 +916,7 @@ def run_command(
     # "/usr/bin/sudo" still resolves to the blocked basename.
     if binary in BLOCKED_COMMANDS:
         raise ValueError(f"Command is blocked by policy: {binary}")
+    _assert_command_contained(command.strip(), extra_args, root)
     requested = timeout if timeout is not None else DEFAULT_COMMAND_TIMEOUT
     try:
         timeout_seconds = int(requested)
@@ -912,12 +938,35 @@ def run_command(
     return _run_process([command, *extra_args], root, timeout=timeout_seconds)
 
 
+def _pyproject_script_command(script: str, root: Path) -> Optional[List[str]]:
+    """Resolve [tool.snapgent.scripts] from pyproject.toml for non-JS projects."""
+    path = root / "pyproject.toml"
+    if not path.is_file():
+        return None
+    try:
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise RuntimeError(f"Could not read pyproject.toml: {error}") from error
+    scripts = (data.get("tool") or {}).get("snapgent", {}).get("scripts") or {}
+    command = scripts.get(script)
+    if not isinstance(command, str) or not command.strip():
+        return None
+    return shlex.split(command)
+
+
 def _package_script_command(script: str, root: Path) -> List[str]:
     if script not in SAFE_PROJECT_SCRIPTS:
         raise ValueError(f"Script must be one of: {', '.join(sorted(SAFE_PROJECT_SCRIPTS))}.")
     package_path = root / "package.json"
     if not package_path.is_file():
-        raise FileNotFoundError("No package.json found in the workspace root.")
+        fallback = _pyproject_script_command(script, root)
+        if fallback is not None:
+            return fallback
+        raise FileNotFoundError(
+            "No package.json found, and pyproject.toml defines no "
+            f"[tool.snapgent.scripts.{script}] command."
+        )
     try:
         package = json.loads(package_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -946,7 +995,22 @@ def run_tests() -> str:
     if (root / "package.json").is_file():
         return run_project_script("test")
     if (root / "pyproject.toml").is_file() or (root / "pytest.ini").is_file():
-        return _run_process([sys.executable, "-m", "pytest"], root, timeout=300)
+        # pytest being named in the manifest does not mean it is installed. A
+        # bare `python -m pytest` then exits 1 with "No module named pytest",
+        # which looks like a failing suite. Use stdlib unittest in that case.
+        try:
+            has_pytest = importlib.util.find_spec("pytest") is not None
+        except (ImportError, ValueError):
+            has_pytest = False
+        if has_pytest:
+            return _run_process([sys.executable, "-m", "pytest"], root, timeout=300)
+        if (root / "tests").is_dir():
+            return _run_process(
+                [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                root,
+                timeout=300,
+            )
+        raise RuntimeError("pytest is not installed and no tests/ directory exists.")
     if any(root.glob("*.sln")) or any(root.glob("*.csproj")):
         return _run_process(["dotnet", "test"], root, timeout=300)
     raise FileNotFoundError("No supported test setup found (package.json, pytest, or .NET project).")

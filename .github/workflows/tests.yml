@@ -28,6 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check version sync
+        run: python3 scripts/version-sync.py --check
+
       # Explicit pip cache. This replaces setup-python's implicit `cache: pip`
       # so the key and restore behaviour are visible in the workflow: the key is
       # the pinned requirements hash, and restore-keys reuses the previous entry

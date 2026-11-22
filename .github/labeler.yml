@@ -52,3 +52,18 @@ tests:
           - tests/**
           - e2e/**
           - snapgent-extension/test-*.js
+
+model-catalog:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/model-catalog*.md
+          - docs/model-catalog.json
+          - scripts/refresh-model-catalog.py
+          - scripts/install-model-catalog-timer.sh
+
+versioning:
+  - changed-files:
+      - any-glob-to-any-file:
+          - VERSION
+          - scripts/version-sync.py
+          - CHANGELOG.md

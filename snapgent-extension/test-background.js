@@ -67,10 +67,10 @@ const internals = new Function( // NOSONAR test only: own local background.js re
   "WebSocket",
   "ZSGuard",
   "ZSPairing",
-  src + "\n; return { send, failAllPending, pending, setConnected: (v) => { connected = v; }, setWs: (w) => { ws = w; } };"
+  src + "\n; return { send, failAllPending, pending, routeFor, markProviderLimited, isProviderLimited, setConnected: (v) => { connected = v; }, setWs: (w) => { ws = w; } };"
 )(global.chrome, global.WebSocket, ZSGuard, ZSPairing);
 
-const { send, failAllPending, pending } = internals;
+const { send, failAllPending, pending, routeFor, markProviderLimited, isProviderLimited } = internals;
 
 (async () => {
   // ── 1. Nothing connected: the request never left ─────────────────────────
@@ -115,6 +115,24 @@ const { send, failAllPending, pending } = internals;
     ok("a failed ws.send reports disconnected", r.kind === "disconnected");
     ok("a failed ws.send is NOT marked sent (safe to retry)", r.sent === false);
     ok("the failed entry is cleaned out of pending", pending.size === 0);
+  }
+
+  // ── 3b. Usage-limit aware routing ───────────────────────────────────────
+  {
+    ok("a plain error does not mark a provider limited",
+      markProviderLimited("deepseek", "bridge offline") === false);
+    ok("a rate-limit error marks the provider limited",
+      markProviderLimited("deepseek", "429 Too Many Requests") === true);
+    ok("limited provider is flagged",
+      isProviderLimited("deepseek") === true);
+    const routed = routeFor({ modelTier: "light" });
+    ok("limited provider is dropped from the tier chain",
+      routed && !routed.providers.includes("deepseek"));
+    ok("another provider remains in the chain",
+      routed && routed.providers.includes("gemini"));
+    const pinned = routeFor({ provider: "deepseek" });
+    ok("an explicit pin still reaches the limited provider",
+      pinned && pinned.providers.length === 1 && pinned.providers[0] === "deepseek");
   }
 
   // ── 4. Ping has a real case in the dispatcher ────────────────────────────

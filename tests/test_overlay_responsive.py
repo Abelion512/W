@@ -9,18 +9,24 @@ This guard fails if someone reintroduces an uncapped fixed width on an
 edge-anchored surface, or drops the box-sizing that keeps padding and border
 inside the cap.
 
-Both the browser extension and the Snapgent App bundle carry an identical
-overlay.css, so both are checked.
+Every overlay.css copy present in the checkout is checked; the optional
+Snapgent App bundle is one of them.
 """
 
 import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-OVERLAYS = [
-    REPO / "snapgent-extension" / "overlay.css",
-    REPO / "snapgent-app" / "extension" / "overlay.css",
-]
+CANONICAL_OVERLAY = REPO / "snapgent-extension" / "overlay.css"
+
+
+def _overlays():
+    """Every overlay.css present in this checkout; the app bundle is optional."""
+    copies = sorted(
+        path for path in REPO.rglob("overlay.css")
+        if not any(part.startswith(".") for part in path.relative_to(REPO).parts)
+    )
+    return copies or [CANONICAL_OVERLAY]
 
 
 def _rules(css):
@@ -33,12 +39,17 @@ def _rules(css):
 
 
 def test_overlay_copies_are_identical():
-    bodies = [path.read_text(encoding="utf-8") for path in OVERLAYS]
-    assert bodies[0] == bodies[1], "the app copy of overlay.css has diverged"
+    assert CANONICAL_OVERLAY.is_file(), "canonical overlay.css missing"
+    canonical = CANONICAL_OVERLAY.read_text(encoding="utf-8")
+    assert canonical.strip(), "canonical overlay.css must not be empty"
+    for path in _overlays():
+        assert path.read_text(encoding="utf-8") == canonical, (
+            f"{path.relative_to(REPO)} drifted from snapgent-extension/overlay.css"
+        )
 
 
 def test_edge_anchored_fixed_surfaces_are_viewport_capped():
-    for path in OVERLAYS:
+    for path in _overlays():
         css = path.read_text(encoding="utf-8")
         offenders = []
         for selector, body in _rules(css):
@@ -56,7 +67,7 @@ def test_edge_anchored_fixed_surfaces_are_viewport_capped():
 
 def test_setup_card_and_toast_use_viewport_caps():
     """The two surfaces that actually overflowed, named explicitly."""
-    for path in OVERLAYS:
+    for path in _overlays():
         css = path.read_text(encoding="utf-8")
         setup = " ".join(body for selector, body in _rules(css) if selector.endswith("#zs-setup"))
         toast = " ".join(body for selector, body in _rules(css) if selector.endswith(".zs-toast"))

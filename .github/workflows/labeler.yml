@@ -16,11 +16,16 @@ on:
         description: Pull request number to label
         required: true
 
+concurrency:
+  group: labeler-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.pr-number }}
+  cancel-in-progress: true
+
 jobs:
   label:
     name: Apply path labels
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: write
@@ -48,7 +53,17 @@ jobs:
             const current = context.payload.pull_request.labels.map((l) => l.name);
             const repo = { owner: context.repo.owner, repo: context.repo.repo };
             for (const stale of sizes.filter((s) => s !== label && current.includes(s))) {
-              await github.rest.issues.removeLabel({ ...repo, issue_number: context.issue.number, name: stale });
+              try {
+                await github.rest.issues.removeLabel({ ...repo, issue_number: context.issue.number, name: stale });
+              } catch (e) {
+                core.warning(`could not remove ${stale}: ${e.message}`);
+              }
             }
-            await github.rest.issues.addLabels({ ...repo, issue_number: context.issue.number, labels: [label] });
+            try {
+              await github.rest.issues.addLabels({ ...repo, issue_number: context.issue.number, labels: [label] });
+            } catch (e) {
+              // A PR closed while the job ran no longer accepts labels; never
+              // fail the whole workflow over a stale event.
+              core.warning(`could not add ${label}: ${e.message}`);
+            }
             core.info(`${total} changed lines (${additions} +, ${deletions} -) -> ${label}`);
