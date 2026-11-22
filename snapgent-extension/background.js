@@ -479,7 +479,7 @@ function runHeartbeatTick() {
 // Resolve once the socket is OPEN, or false after `timeout` ms (event-driven).
 function waitForConnection(timeout = 8000) {
   if (connected && ws && ws.readyState === WebSocket.OPEN) return Promise.resolve(true);
-  connect(); // nudge a (re)connection - important after a worker wake-up
+  connect().catch(() => {}); // nudge a (re)connection - important after a worker wake-up
   return new Promise((resolve) => {
     let settled = false;
     const finish = (ok) => {
@@ -917,7 +917,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         authRequired = false; // the popup may have just saved a valid token
         chrome.storage.local.remove(AUTH_STATE_KEY);
         bridgeToken = null; // re-read: the popup may have just saved a token
-        connect();
+        connect().catch(() => {});
         sendResponse({ ok: true });
         break;
       default:
