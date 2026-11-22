@@ -112,31 +112,25 @@ class TaskStore:
         self._tasks: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
 
-    def add(self, task: Dict[str, Any]) -> None:
+    def add(self, task: Dict[str, Any]) -> bool:
+        """Store a task. Refuse new work when every stored task is still live."""
+        def _pending(task_value: Dict[str, Any]) -> bool:
+            state = (task_value.get("status") or {}).get("state")
+            return state in ("TASK_STATE_SUBMITTED", "TASK_STATE_WORKING")
+
         with self._lock:
+            finished = [task_id for task_id, value in self._tasks.items() if not _pending(value)]
+            if len(self._tasks) >= MAX_TASKS and not finished:
+                return False
             self._tasks[task["id"]] = task
             # ponytail: cap the store; add TTL eviction if tasks ever outlive a session.
             while len(self._tasks) > MAX_TASKS:
-                # Never evict a task whose submit is still waiting for its
-                # reply: the caller would poll a vanished id and hang out the
-                # full timeout. Evict finished tasks first; if none exist the
-                # cap is exceeded momentarily rather than dropping live work.
-                def _pending(task_value: Dict[str, Any]) -> bool:
-                    state = (task_value.get("status") or {}).get("state")
-                    return state in ("TASK_STATE_SUBMITTED", "TASK_STATE_WORKING")
-
-                finished = [task_id for task_id, task_value in self._tasks.items() if not _pending(task_value)]
-                if not finished:
-                    # All tasks are live: drop the oldest rather than grow
-                    # without bound. A poller gets "Task not found" instead of
-                    # waiting out a full 30-minute timeout on a vanished id.
-                    oldest = next(iter(self._tasks))
-                    self._tasks.pop(oldest, None)
-                    continue
+                finished = [task_id for task_id, value in self._tasks.items() if not _pending(value)]
                 oldest_finished = next(
                     task_id for task_id in self._tasks if task_id in finished
                 )
                 self._tasks.pop(oldest_finished)
+            return True
 
     def get(self, task_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -278,8 +272,9 @@ class A2AServer:
         history_length = configuration.get("historyLength")
 
         task = self._new_task(message, params)
+        if not self.store.add(task):
+            return self.error(rpc_id, -32000, "Task store is full of live tasks; retry later.")
         self._track_task(task["id"])
-        self.store.add(task)
         if configuration.get("returnImmediately"):
             # Snapshot before the worker can flip the task to WORKING/COMPLETED.
             view = self._view(self.store.get(task["id"]), history_length)
@@ -365,10 +360,11 @@ class A2AServer:
         history_length = configuration.get("historyLength")
 
         task = self._new_task(message, params)
-        self._track_task(task["id"])
         task["status"] = {"state": "TASK_STATE_WORKING", "timestamp": _now_iso()}
         task["metadata"]["orchestratedProviders"] = providers
-        self.store.add(task)
+        if not self.store.add(task):
+            return self.error(rpc_id, -32000, "Task store is full of live tasks; retry later.")
+        self._track_task(task["id"])
         if configuration.get("returnImmediately"):
             view = self._view(self.store.get(task["id"]), history_length)
             threading.Thread(
@@ -389,26 +385,31 @@ class A2AServer:
     ) -> None:
         winner: Optional[Dict[str, Any]] = None
         errors: list = []
-        deadline = self.timeout_ms / 1000.0 + 60
+        # A caller may request up to MAX_TIMEOUT_MS for each provider, so the
+        # aggregate wait must cover that, not just the server default.
+        deadline = MAX_TIMEOUT_MS / 1000.0 + 60
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(providers))
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=len(providers)) as pool:
-                futures = {
-                    pool.submit(
-                        self._call_submit,
-                        text,
-                        {**(metadata or {}), "provider": provider},
-                    ): provider
-                    for provider in providers
-                }
-                for future in concurrent.futures.as_completed(futures, timeout=deadline):
-                    result = future.result()
-                    if result.get("ok") and winner is None:
-                        winner = result
-                        break
-                    if not result.get("ok"):
-                        errors.append(str(result.get("error") or "The web AI failed."))
+            futures = {
+                pool.submit(
+                    self._call_submit,
+                    text,
+                    {**(metadata or {}), "provider": provider},
+                ): provider
+                for provider in providers
+            }
+            for future in concurrent.futures.as_completed(futures, timeout=deadline):
+                result = future.result()
+                if result.get("ok") and winner is None:
+                    winner = result
+                    break
+                if not result.get("ok"):
+                    errors.append(str(result.get("error") or "The web AI failed."))
         except concurrent.futures.TimeoutError:
             errors.append("Orchestration timed out waiting for a provider.")
+        finally:
+            # Do not let losing providers keep the worker alive after a winner.
+            pool.shutdown(wait=False, cancel_futures=True)
         if self._is_canceled(task_id):
             self._forget_cancel(task_id)
             return
@@ -431,9 +432,11 @@ class A2AServer:
             return
 
         task = self._new_task(message, params)
-        self._track_task(task["id"])
         task["status"] = {"state": "TASK_STATE_WORKING", "timestamp": _now_iso()}
-        self.store.add(task)
+        if not self.store.add(task):
+            handler.send_json(self.error(rpc_id, -32000, "Task store is full of live tasks; retry later."))
+            return
+        self._track_task(task["id"])
 
         handler.start_sse()
         handler.send_sse({"task": self._view(task, None)})

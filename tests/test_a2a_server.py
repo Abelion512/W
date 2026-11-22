@@ -279,5 +279,21 @@ class A2AServerTests(unittest.TestCase):
         self.assertIn("elapsedSeconds", task["status"]["progress"])
 
 
+class TaskStoreTests(unittest.TestCase):
+    def test_full_store_refuses_live_work_instead_of_evicting_it(self):
+        original = a2a_server.MAX_TASKS
+        a2a_server.MAX_TASKS = 1
+        try:
+            store = a2a_server.TaskStore()
+            live = {"id": "live", "status": {"state": "TASK_STATE_WORKING"}}
+            self.assertTrue(store.add(live))
+            incoming = {"id": "new", "status": {"state": "TASK_STATE_WORKING"}}
+            self.assertFalse(store.add(incoming))
+            self.assertIsNone(store.get("new"))
+            self.assertIsNotNone(store.get("live"))
+        finally:
+            a2a_server.MAX_TASKS = original
+
+
 if __name__ == "__main__":
     unittest.main()
