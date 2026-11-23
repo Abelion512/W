@@ -225,9 +225,13 @@ def run_loop(
 
 def _write_ledger(result: Dict[str, Any]) -> None:
     try:
-        LEDGER_DIR.mkdir(parents=True, exist_ok=True)
+        LEDGER_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        LEDGER_DIR.chmod(0o700)
         path = LEDGER_DIR / f"{result['loop_id']}.json"
-        path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        # Ledgers hold prompts, replies and acceptance-command output.
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(result, indent=2))
         result["ledger_path"] = str(path)
     except OSError:
         result["ledger_path"] = None

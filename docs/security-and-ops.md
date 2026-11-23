@@ -91,15 +91,17 @@ The bridge listens on loopback, but any local process and any web page can reach
 
 - **Origin allowlist.** Only `chrome-extension://`, `moz-extension://` and
   `safari-web-extension://` origins, plus clients that send no `Origin` at all
-  (native processes), get through. Anything else closes with `1008`.
-- **Per-install token.** `~/.snapgent/bridge_token` (mode `600`, directory `700`),
-  generated on first run and compared in constant time. It is required from
-  clients that send no `Origin` (the bridge cannot tell those apart from any other
-  local process) and from everything when `ZS_BRIDGE_AUTH=strict` is set; a browser
-  extension is accepted on the allowlist alone so pairing needs no copy-paste.
-  A connection that should have presented it closes with `1008`.
-  `ZS_BRIDGE_AUTH=0` turns only this check off, never the allowlist.
+  (native processes), get through. Anything else closes with `1008`. This is a
+  browser-only filter, not authentication: a local process can set any Origin.
+- **Per-install token, required from every client.** `~/.snapgent/bridge_token`
+  (mode `600`, directory `700`), generated on first run and compared in constant
+  time. Every client must present it; a missing or invalid token closes with
+  `1008`. Set `ZS_BRIDGE_AUTH=auto-pair` to accept extension origins without a
+  token on a trusted single-user host (the old copy-paste-free behavior).
+  `ZS_BRIDGE_AUTH=0` disables only this check, never the allowlist.
   `ZS_BRIDGE_TOKEN` pins the value and disables rotation.
+- **Fail closed on token errors.** If the token file cannot be read or created,
+  the bridge exits instead of serving an unauthenticated tool RPC server.
 - **Rotation revokes sessions.** `rotate_token` writes the new secret, answers
   with it, then closes every authenticated socket (`1012`) so a leaked token
   cannot keep a live connection.

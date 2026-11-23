@@ -298,19 +298,24 @@ class BridgeAuthTests(unittest.IsolatedAsyncioTestCase):
         for rejected in ("https://evil.example", "http://127.0.0.1:8080", "null", "file://"):
             self.assertFalse(bridge.origin_allowed(rejected), rejected)
 
-    def test_extensions_pair_without_a_token_but_native_clients_do_not(self):
-        """An extension Origin needs no copy-paste; a native client still does."""
+    def test_every_client_needs_a_token_by_default(self):
+        """Origin is client-controlled; only the token authenticates a client."""
         with patch.dict(os.environ, {bridge.AUTH_DISABLE_ENV: ""}):
             for origin in (
                 "chrome-extension://abcdefghijklmnop",
                 "moz-extension://abcdefgh",
                 "safari-web-extension://abcdefgh",
+                None,
+                "",
+                "https://evil.example",
             ):
-                self.assertFalse(bridge.token_required_for(origin), origin)
-            # No Origin at all: the bridge cannot tell this from any other
-            # local process, so it has to prove it holds the token.
+                self.assertTrue(bridge.token_required_for(origin), origin)
+
+    def test_auto_pair_mode_restores_origin_exemption(self):
+        """Opt-in convenience mode still exempts browser extensions."""
+        with patch.dict(os.environ, {bridge.AUTH_DISABLE_ENV: "auto-pair"}):
+            self.assertFalse(bridge.token_required_for("chrome-extension://abcdefghijklmnop"))
             self.assertTrue(bridge.token_required_for(None))
-            self.assertTrue(bridge.token_required_for(""))
             self.assertTrue(bridge.token_required_for("https://evil.example"))
 
     def test_strict_mode_requires_the_token_from_extensions_too(self):
@@ -443,20 +448,17 @@ class BridgeAuthTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([entry.name for entry in Path(temp_dir).iterdir()], ["bridge_token"])
 
     @unittest.skipIf(bridge.websockets is None, "websockets package is not installed")
-    async def test_privileged_request_needs_token_despite_allowed_origin(self):
+    async def test_forged_extension_origin_is_rejected_at_handshake(self):
         manager = bridge.Bridge("secret-token")
         async with bridge.websockets.serve(manager.handle_client, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
             base = f"ws://127.0.0.1:{port}"
-            async with bridge.websockets.connect(
-                base, additional_headers={"Origin": "chrome-extension://evil"}
-            ) as client:
-                self.assertEqual(json.loads(await client.recv())["type"], "connected")
-                await client.send(json.dumps({"type": "add_server", "id": 9,
-                                              "server_id": "x", "command": "echo"}))
-                reply = json.loads(await client.recv())
-                self.assertFalse(reply["ok"])
-                self.assertIn("token", reply["error"].lower())
+            with self.assertRaises(bridge.websockets.exceptions.ConnectionClosed) as caught:
+                async with bridge.websockets.connect(
+                    base, additional_headers={"Origin": "chrome-extension://evil"}
+                ) as client:
+                    await asyncio.wait_for(client.recv(), timeout=3)
+            self.assertEqual(caught.exception.rcvd.code, 1008)
 
     @unittest.skipIf(bridge.websockets is None, "websockets package is not installed")
     async def test_rotated_token_replaces_the_old_one_for_new_connections(self):

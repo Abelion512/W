@@ -63,6 +63,15 @@ if getattr(sys, "frozen", False):
     ROOT = Path(sys.executable).resolve().parent
 else:
     ROOT = Path(__file__).resolve().parent
+def _context_root() -> Path:
+    """Filesystem root A2A contextFiles are scoped to (the workspace, not the bridge)."""
+    for key in ("ZS_WORKSPACE_ROOT", "MCP_ROOT"):
+        value = os.environ.get(key)
+        if value:
+            return Path(value).resolve()
+    return ROOT
+
+
 CONFIG_PATH = Path(os.environ.get("ZS_BRIDGE_CONFIG", str(ROOT / "config.json")))
 LOG_PATH = ROOT / "logs" / "bridge_debug.log"
 HOST = "127.0.0.1"
@@ -130,6 +139,10 @@ _basic_config: Dict[str, Any] = {
 if _log_format is None:
     _basic_config["format"] = "%(asctime)s %(message)s"
 logging.basicConfig(**_basic_config)
+try:
+    LOG_PATH.chmod(0o600)  # tool output tailed back to clients; not world-readable
+except OSError:
+    pass
 if _log_format is not None:
     for _handler in logging.getLogger().handlers:
         _handler.setFormatter(_log_format)
@@ -881,7 +894,7 @@ class Bridge:
                         context_sandbox.prepare,
                         requested,
                         prompt_id,
-                        ROOT,
+                        _context_root(),
                         Path(os.environ["ZS_CONTEXT_DIR"]).resolve()
                         if os.environ.get("ZS_CONTEXT_DIR")
                         else None,
@@ -1313,7 +1326,9 @@ class Bridge:
                     websocket,
                     {"type": "tool_result", "id": request_id, "ok": True, "text": text, "images": images},
                 )
-            log(f"<- {name} ({text[:120].replace(chr(10), ' ')})")
+            # Never persist tool output: it can contain secrets read from the
+            # workspace, and get_bridge_status tails this log back to clients.
+            log(f"<- {name} (ok)")
         except (asyncio.TimeoutError, RuntimeError, OSError, ValueError) as error:
             message = str(error)
             await self._send_client(
@@ -1471,6 +1486,14 @@ async def run() -> None:
             f"'{sys.executable} -m pip install websockets'."
         )
     token, created = load_auth_token(log)
+    if token is None and not auth_disabled():
+        # A failed token read is not an operator choice to disable auth. Serve
+        # nothing rather than an unauthenticated tool/state RPC server.
+        raise SystemExit(
+            "Refusing to start: the bridge token could not be loaded or created. "
+            "Fix ~/.snapgent/bridge_token (or ZS_BRIDGE_TOKEN_FILE) or set "
+            f"{AUTH_DISABLE_ENV}=0 only if auth is intentionally disabled."
+        )
     bridge = Bridge(token)
     # Defense in depth above the token handshake: reject non-extension browser
     # origins at the WebSocket handshake itself. Any extension ID is accepted

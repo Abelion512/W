@@ -259,7 +259,7 @@ def test_worktree_git_dir_resolves_only_common_git_dir():
         (common / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
         (wt_meta / "HEAD").write_text("ref: refs/heads/feat\n", encoding="utf-8")
         (wt_meta / "commondir").write_text("../..\n", encoding="utf-8")
-        wt = base / "agent"
+        wt = parent / "agent"  # a real worktree: common .git is in the parent dir
         wt.mkdir()
         (wt / ".git").write_text(f"gitdir: {wt_meta}\n", encoding="utf-8")
 

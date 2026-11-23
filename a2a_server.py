@@ -15,6 +15,7 @@ import concurrent.futures
 import copy
 import json
 import secrets
+import sys
 import threading
 import time
 import uuid
@@ -34,6 +35,9 @@ DEFAULT_TIMEOUT_MS = 1_800_000
 MAX_TIMEOUT_MS = 3_600_000
 MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_TASKS = 200
+# A max-size request must not become hundreds of MB of retained task history.
+MAX_HISTORY_TEXT = 64 * 1024
+MAX_HISTORY_TOTAL = 256 * 1024
 MAX_CONCURRENT_SUBMITS = 8
 MAX_REQUESTS_PER_MINUTE = 120
 RATE_WINDOW_SECONDS = 60.0
@@ -136,6 +140,11 @@ class TaskStore:
                 self._tasks.pop(oldest_finished)
             return True
 
+    def has_context(self, context_id: str) -> bool:
+        """True only for context ids this server issued and still stores."""
+        with self._lock:
+            return any(task.get("contextId") == context_id for task in self._tasks.values())
+
     def get(self, task_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             task = self._tasks.get(task_id)
@@ -216,7 +225,11 @@ class A2AServer:
         self.port = self._httpd.server_address[1]
         if not self.base_url or self.base_url.endswith(":0"):
             self.base_url = f"http://{self.host}:{self.port}"
-        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        # Default 0.5s poll makes shutdown() block for half a second on every
+        # bridge stop (and on every test teardown).
+        self._thread = threading.Thread(
+            target=self._httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -548,10 +561,36 @@ class A2AServer:
 
     # -- task helpers ----------------------------------------------------
 
+    @staticmethod
+    def _bounded_message(message: Any) -> Any:
+        """Keep persisted history bounded independently of the 2 MB body cap."""
+        if not isinstance(message, dict):
+            return message
+        parts = message.get("parts")
+        if not isinstance(parts, list):
+            return message
+        kept: list = []
+        total = 0
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if not isinstance(text, str):
+                continue
+            text = text[:MAX_HISTORY_TEXT]
+            kept.append({**part, "text": text})
+            total += len(text)
+            if total >= MAX_HISTORY_TOTAL:
+                break
+        return {**message, "parts": kept}
+
     def _new_task(self, message: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         context_id = f"ctx-{uuid.uuid4().hex}"
-        if isinstance(message, dict) and isinstance(message.get("contextId"), str):
-            context_id = message["contextId"] or context_id
+        if isinstance(message, dict):
+            requested = message.get("contextId")
+            # Only a context this server issued and still stores may be reused.
+            if isinstance(requested, str) and requested and self.store.has_context(requested):
+                context_id = requested
         metadata = params.get("metadata")
         if not isinstance(metadata, dict):
             metadata = {}
@@ -561,7 +600,7 @@ class A2AServer:
             "submittedAt": _now_iso(),
             "status": {"state": "TASK_STATE_SUBMITTED", "timestamp": _now_iso()},
             "artifacts": [],
-            "history": [message],
+            "history": [self._bounded_message(message)],
             "metadata": metadata,
         }
 
@@ -603,8 +642,9 @@ class A2AServer:
         self._task_local.task_id = task_id
         try:
             result = self.submit(text, timeout, metadata or {})
-        except Exception as error:  # noqa: BLE001 - report any submit failure
-            return {"ok": False, "error": str(error)}
+        except Exception as error:  # noqa: BLE001 - log details, never echo them
+            sys.stderr.write(f"a2a: submit failed: {error!r}\n")
+            return {"ok": False, "error": "The web AI delegation failed."}
         finally:
             self._task_local.task_id = prev_task_id
             self._submit_slots.release()
@@ -733,10 +773,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- routing ----------------------------------------------------------
 
-    def _guard_http(self, a2a: A2AServer) -> bool:
-        if not a2a.host_ok(self.headers.get("Host")):
-            self.send_json({"error": "forbidden host"}, status=403)
-            return False
+    def _rate_limit(self, a2a: A2AServer) -> bool:
         client_ip = self.client_address[0] if self.client_address else ""
         if not a2a.allow_request(client_ip):
             self.send_json(
@@ -747,11 +784,20 @@ class _Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _guard_http(self, a2a: A2AServer, rate_limit: bool = True) -> bool:
+        if not a2a.host_ok(self.headers.get("Host")):
+            self.send_json({"error": "forbidden host"}, status=403)
+            return False
+        if rate_limit and not self._rate_limit(a2a):
+            return False
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
         a2a: A2AServer = self.server.a2a  # type: ignore[attr-defined]
-        if not self._guard_http(a2a):
-            return
         path = urlsplit(self.path).path
+        # Public agent-card reads must not burn the shared client budget.
+        if not self._guard_http(a2a, rate_limit=path not in CARD_PATHS):
+            return
         if path in CARD_PATHS:
             self.send_json(a2a.card())
         else:
@@ -759,7 +805,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         a2a: A2AServer = self.server.a2a  # type: ignore[attr-defined]
-        if not self._guard_http(a2a):
+        # Authenticate before consuming quota: an unauthorized peer must not be
+        # able to force 429 for the legitimate bearer-token holder.
+        if not self._guard_http(a2a, rate_limit=False):
             return
         if urlsplit(self.path).path != "/":
             self.send_json({"error": "not found"}, status=404)
@@ -770,6 +818,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
+            return
+        if not self._rate_limit(a2a):
             return
 
         raw = self._read_body()

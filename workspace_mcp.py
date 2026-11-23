@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import tomllib
+from itertools import islice
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -26,6 +27,13 @@ IGNORED_DIRECTORIES = {
 }
 MAX_RESULTS = 500
 MAX_FILE_CHARS = 200_000
+# Compiled once: outlines scan every line of a source file.
+_OUTLINE_PATTERNS = tuple(re.compile(pattern) for pattern in (
+    r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)",
+    r"^\s*class\s+([A-Za-z_]\w*)",
+    r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)",
+    r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)",
+))
 SAFE_PROJECT_SCRIPTS = {"build", "check", "format", "lint", "test", "typecheck"}
 # Defense-in-depth, NOT a security boundary: this tool is RCE by design (it
 # already runs arbitrary workspace commands), so a denylist can be bypassed
@@ -70,7 +78,44 @@ def normalize_target(rel_or_abs: str, root: Path) -> Path:
     return target
 
 
+def _parent_fd(target: Path, root: Path) -> int:
+    """Open the validated parent as a dirfd so writes/deletes cannot follow a
+    symlink swapped in after normalize_target validated the string."""
+    parent = target.parent
+    if not _inside_root(parent, root):
+        raise ValueError(f"Path escapes workspace root: {parent}")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(parent, flags)
+    try:
+        real = Path(os.readlink(f"/proc/self/fd/{descriptor}")).resolve()
+    except OSError:
+        real = parent.resolve()
+    if not _inside_root(real, root):
+        os.close(descriptor)
+        raise ValueError(f"Path escapes workspace root: {parent}")
+    return descriptor
+
+
+def _write_text_at(target: Path, root: Path, content: str, exclusive: bool = False) -> None:
+    descriptor = _parent_fd(target, root)
+    try:
+        mode = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        mode |= os.O_EXCL if exclusive else os.O_TRUNC
+        handle = os.open(target.name, mode, 0o666, dir_fd=descriptor)
+        with os.fdopen(handle, "w", encoding="utf-8", newline="") as stream:
+            stream.write(content)
+    finally:
+        os.close(descriptor)
+
+
 def _relative(path: Path, root: Path) -> str:
+    # Walkers build entries under an already-resolved root: a prefix slice avoids
+    # pathlib's per-component parsing on every file in a large tree.
+    root_text = str(root)
+    text = str(path)
+    prefix = root_text + os.sep
+    if text.startswith(prefix):
+        return text[len(prefix):].replace(os.sep, "/") or "."
     return path.relative_to(root).as_posix() or "."
 
 
@@ -273,7 +318,13 @@ def _worktree_git_dir(root: Path) -> Optional[Path]:
             if any(part not in ("..", ".") for part in relative.parts):
                 return None
             common = (gitdir / relative).resolve()  # NOSONAR relative path restricted to '..' and checked against the parent git dir
-            if common != gitdir.parent.parent:
+            # Only a real worktree of THIS workspace may expose its parent .git
+            # to the sandbox. Workspace file content controls gitdir, so do not
+            # accept an arbitrary host path that merely has worktree layout.
+            expected_common = (root.parent / ".git").resolve()
+            if common != expected_common or gitdir.parent != expected_common / "worktrees":
+                return None
+            if not _inside_root(gitdir, root.parent):
                 return None
             if common.is_dir() and (common / "HEAD").is_file() and common.name == ".git":
                 return common
@@ -480,7 +531,7 @@ def get_project_info() -> Dict[str, Any]:
     for filename in ("package.json", "pyproject.toml", "Cargo.toml", "go.mod", "pom.xml", "*.sln"):
         candidates = sorted(root.glob(filename))[:10]
         for candidate in candidates:
-            if not _inside_root(candidate, root):
+            if candidate.is_symlink() and not _inside_root(candidate, root):
                 continue
             entry: Dict[str, Any] = {"path": _relative(candidate, root)}
             if candidate.name == "package.json":
@@ -509,7 +560,7 @@ def list_dir(path: str = ".") -> List[Dict[str, str]]:
             "type": "directory" if child.is_dir() else "file",
         }
         for child in sorted(target.iterdir(), key=lambda item: (item.is_file(), item.name.lower()))
-        if _inside_root(child, root)
+        if not child.is_symlink() or _inside_root(child, root)
     ]
 
 
@@ -524,16 +575,18 @@ def list_tree(path: str = ".", max_depth: int = 3) -> List[Dict[str, Any]]:
         current_path = Path(current)
         depth = len(current_path.relative_to(target).parts)
         dirs[:] = _prune_dirs(dirs, current_path, root)
-        for name in sorted(dirs) + sorted(files):
-            entry_path = current_path / name
-            if not _inside_root(entry_path, root):
-                continue
-            result.append({
-                "path": _relative(entry_path, root),
-                "type": "directory" if entry_path.is_dir() else "file",
-            })
-            if len(result) >= MAX_RESULTS:
-                return result
+        # os.walk already classified each name; no per-entry is_dir() stat needed.
+        for names, entry_type in ((sorted(dirs), "directory"), (sorted(files), "file")):
+            for name in names:
+                entry_path = current_path / name
+                if entry_path.is_symlink() and not _inside_root(entry_path, root):
+                    continue
+                result.append({
+                    "path": _relative(entry_path, root),
+                    "type": entry_type,
+                })
+                if len(result) >= MAX_RESULTS:
+                    return result
         if depth >= depth_limit:
             dirs[:] = []
     return result
@@ -565,6 +618,9 @@ def search_files(path: str, query: str, file_pattern: str = "*", case_sensitive:
     if not query.strip():
         raise ValueError("Search query cannot be empty.")
     needle = query if case_sensitive else query.lower()
+    # A query containing a newline cannot match after per-line rstrip; keep the
+    # old stripped compare for that rare case instead of matching the terminator.
+    strip_lines = "\n" in needle or "\r" in needle
     matches: List[Dict[str, Any]] = []
     files = [target] if target.is_file() else _iter_files(target, root)
     for file_path in files:
@@ -578,13 +634,15 @@ def search_files(path: str, query: str, file_pattern: str = "*", case_sensitive:
             continue
         with handle:
             for line_number, line in enumerate(handle, start=1):
-                line = line.rstrip("\r\n")
-                haystack = line if case_sensitive else line.lower()
+                # Match against the raw line: stripping every line costs two
+                # allocations per line in a full-tree scan. Trim only hits.
+                haystack = line.rstrip("\r\n") if strip_lines else line
+                haystack = haystack if case_sensitive else haystack.lower()
                 if needle in haystack:
                     matches.append({
                         "path": _relative(file_path, root),
                         "line": line_number,
-                        "text": line[:500],
+                        "text": line.rstrip("\r\n")[:500],
                     })
                     if len(matches) >= MAX_RESULTS:
                         return matches
@@ -608,13 +666,17 @@ def read_files(paths: List[str]) -> List[Dict[str, str]]:
     return [{"path": path, "content": read_file(path)} for path in paths]
 
 
-def _iter_file_lines(path: str):
-    """Yield (line number, text) straight from disk, without read_file's cap."""
+def _iter_file_lines(path: str, start: int = 1, stop: Optional[int] = None):
+    """Yield (line number, text) straight from disk, without read_file's cap.
+
+    Bounds are applied to the stream itself: a range near EOF must not rstrip
+    and discard every preceding line.
+    """
     target = normalize_target(path, get_root())
     if not target.is_file():
         raise FileNotFoundError(f"File not found: {path}")
     with target.open(encoding="utf-8", errors="replace") as stream:
-        for number, line in enumerate(stream, start=1):
+        for number, line in enumerate(islice(stream, start - 1, stop), start=start):
             yield number, line.rstrip("\r\n")
 
 
@@ -625,11 +687,7 @@ def read_file_lines(path: str, start_line: int = 1, end_line: int = 200) -> str:
         raise ValueError("Read at most 1000 lines per request.")
     selected = []
     used = 0
-    for number, text in _iter_file_lines(path):
-        if number < start_line:
-            continue
-        if number > end_line:
-            break
+    for number, text in _iter_file_lines(path, start_line, end_line + 1):
         if used + len(text) > MAX_FILE_CHARS:
             selected.append(f"{number}: {text[:max(0, MAX_FILE_CHARS - used)]}")
             selected.append("[truncated]")
@@ -655,16 +713,10 @@ def get_file_info(path: str) -> Dict[str, Any]:
 
 
 def get_file_outline(path: str) -> List[Dict[str, Any]]:
-    patterns = (
-        r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)",
-        r"^\s*class\s+([A-Za-z_]\w*)",
-        r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)",
-        r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)",
-    )
     result = []
     for line_number, line in _iter_file_lines(path):
-        for pattern in patterns:
-            match = re.search(pattern, line)
+        for pattern in _OUTLINE_PATTERNS:
+            match = pattern.search(line)
             if match:
                 result.append({"name": match.group(1), "line": line_number})
                 break
@@ -676,8 +728,7 @@ def create_file(path: str, content: str = "") -> str:
     target = normalize_target(path, root)
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with target.open("x", encoding="utf-8", newline="") as file:
-            file.write(content)
+        _write_text_at(target, root, content, exclusive=True)
     except FileExistsError as error:
         raise FileExistsError(f"File already exists: {path}") from error
     return f"Created {_relative(target, root)}"
@@ -687,7 +738,7 @@ def write_file(path: str, content: str) -> str:
     root = get_root()
     target = normalize_target(path, root)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    _write_text_at(target, root, content)
     return f"Saved {_relative(target, root)}"
 
 
@@ -705,7 +756,7 @@ def edit_file(path: str, old_text: str, new_text: str, replace_all: bool = False
     if not replace_all and occurrences != 1:
         raise ValueError(f"old_text occurs {occurrences} times; provide a unique snippet or set replace_all.")
     updated = content.replace(old_text, new_text) if replace_all else content.replace(old_text, new_text, 1)
-    target.write_text(updated, encoding="utf-8")
+    _write_text_at(target, root, updated)
     return f"Updated {_relative(target, root)} ({occurrences if replace_all else 1} replacement(s))"
 
 
@@ -777,7 +828,11 @@ def delete_file(path: str) -> str:
         raise IsADirectoryError(f"Not a file (directories are not deleted): {path}")
     if not target.is_file():
         raise FileNotFoundError(f"File not found: {path}")
-    target.unlink()
+    descriptor = _parent_fd(target, root)
+    try:
+        os.unlink(target.name, dir_fd=descriptor)
+    finally:
+        os.close(descriptor)
     return f"Deleted {_relative(target, root)}"
 
 
@@ -800,7 +855,7 @@ def apply_patch(path: str, edits: List[Dict[str, Any]]) -> str:
         if occurrences != 1:
             raise ValueError(f"Edit {index}: old_text occurs {occurrences} times; it must match exactly once. No changes were written.")
         content = content.replace(old_text, new_text, 1)
-    target.write_text(content, encoding="utf-8")
+    _write_text_at(target, root, content)
     return f"Patched {_relative(target, root)} ({len(edits)} edit(s))"
 
 
@@ -936,10 +991,13 @@ def _assert_command_contained(command: str, extra_args: List[str], root: Path) -
         if ".." in re.split(r"[/\\]", value):
             raise ValueError(f"Path escapes workspace root: {value}")
     executable = Path(command.strip())
-    if executable.is_absolute() or len(executable.parts) > 1:
-        resolved = executable.resolve() if executable.is_absolute() else (root / executable).resolve()
-        if not _inside_root(resolved, root):
-            raise ValueError(f"Command path escapes workspace root: {command}")
+    # Always resolve, including a bare "./alias": a relative symlink in the
+    # workspace can point at a blocked host binary while its own name is benign.
+    resolved = executable.resolve() if executable.is_absolute() else (root / executable).resolve()
+    if not _inside_root(resolved, root):
+        raise ValueError(f"Command path escapes workspace root: {command}")
+    if resolved.name in BLOCKED_COMMANDS:
+        raise ValueError(f"Command is blocked by policy: {resolved.name}")
 
 
 def run_command(

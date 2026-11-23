@@ -4,6 +4,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -71,9 +72,15 @@ def main(root_override: Optional[str] = None) -> int:
         # bridge may reload config.json at any moment (switch-project.sh), so
         # it must never observe a half-written file.
         payload = json.dumps(configuration, indent=2, ensure_ascii=False) + "\n"
-        temp_path = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+        # Unique O_EXCL temp: a predictable name lets a local attacker plant a
+        # symlink and redirect both the write and the final replace.
+        temp_path = CONFIG_PATH.with_name(
+            f"{CONFIG_PATH.name}.{os.getpid()}.{time.time_ns()}.tmp"
+        )
         try:
-            temp_path.write_text(payload, encoding="utf-8")
+            descriptor = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(payload)
             temp_path.replace(CONFIG_PATH)
         finally:
             try:
