@@ -86,7 +86,7 @@ const ZSUiController = (() => {
 
     let root, bar, stateEl, actionBtn, stopBtn, targetSelect, targetWrap, switchBtn, menuEl, unstableEl;
     let targetBtn, targetMenuEl;
-    let cover, coverRaf, barRaf;
+    let cover, coverRaf, barRaf, coverNow;
     let coverLockedH = 0, coverLockedEl = null, anchorLockedBh = 0;
     // placeBar runs every frame. Sampling computed styles and walking ancestors
     // on each frame is measurable work on a busy chat page, so cache the two
@@ -283,6 +283,17 @@ const ZSUiController = (() => {
       } catch {}
       renderBar();
       placeBar(); // start the per-frame anchoring loop
+      // A background split tab gets no rAF, so a sidebar opening / pane resize
+      // leaves the fixed cover and inline bar at their old coordinates over the
+      // sidebar. These events still fire while hidden; re-place synchronously.
+      const refreshGeometry = () => {
+        placeBarNow();
+        if (cover && cover.dataset.on === "1" && coverNow) coverNow();
+      };
+      window.addEventListener("resize", refreshGeometry);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) refreshGeometry();
+      });
     }
 
     // The primary button does different things depending on the current state
@@ -1448,8 +1459,7 @@ const ZSUiController = (() => {
       u.style.top = Math.round(Math.max(4, br.top - uh - 5)) + "px";
     }
 
-    function placeBar() {
-      barRaf = requestAnimationFrame(placeBar);
+    function placeBarNow() {
       // Composer halo: a soft ring that follows the site's input box, so the
       // Snapgent band reads as attached to the composer on every provider.
       // Purely decorative and click-through; colour comes from the theme CSS.
@@ -1646,6 +1656,11 @@ const ZSUiController = (() => {
       }
     }
 
+    function placeBar() {
+      placeBarNow();
+      barRaf = requestAnimationFrame(placeBar);
+    }
+
     // Called by the core's sweep + after state changes: refresh the bar content.
     // (Positioning runs continuously in placeBar; this only updates what's shown.)
     function updateStartGate() { renderBar(); }
@@ -1767,12 +1782,12 @@ const ZSUiController = (() => {
       }
       cover.dataset.on = "1"; // intent flag: keep the place() loop alive while set
       cover.style.display = "flex";
-      const place = () => {
+      const placeNow = () => {
         // Loop runs while the cover is INTENDED on (dataset.on), not while it's
         // visible - so we can hide it for an overlay and still restore it after.
         if (!cover || cover.dataset.on !== "1") return;
         const e = P.getEditor();
-        if (!e) { coverRaf = requestAnimationFrame(place); return; }
+        if (!e) return;
         // Re-assert the typing mask on the CURRENT editor node: sites that
         // recreate the editor on each inject/clear (Kimi's Vue) drop the class,
         // which would un-hide the raw text and un-cap its height. Cheap idempotent
@@ -1796,7 +1811,6 @@ const ZSUiController = (() => {
           (P.captchaPresent && P.captchaPresent())
         ) {
           cover.style.display = "none";
-          coverRaf = requestAnimationFrame(place);
           return;
         }
         cover.style.display = "flex";
@@ -1897,8 +1911,13 @@ const ZSUiController = (() => {
         // corner radius so the cover's square corners don't poke past the card's
         // rounded ones. Editor-sized covers keep the CSS default.
         if (P.coverTarget) cover.style.borderRadius = getComputedStyle(covNode).borderRadius;
+      };
+      const place = () => {
+        if (!cover || cover.dataset.on !== "1") return;
+        placeNow();
         coverRaf = requestAnimationFrame(place);
       };
+      coverNow = placeNow;
       place();
     }
 
