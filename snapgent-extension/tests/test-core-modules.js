@@ -117,6 +117,59 @@ function check(name, cond, detail) {
   check("a2a runner throttles and emits chunk deltas", chunks.length === 2 && chunks[0].text === "hello" && chunks[1].text === " world!", chunks);
   check("a2a runner sends cleaned final result", results.length === 1 && results[0].ok === true && results[0].text === "OK", results);
   check("a2a runner clears currentId after completion", runner.getCurrentId() === null);
+  check("A2A_HARD_CAP_MS matches server 30m default", ZSA2ARunner.A2A_HARD_CAP_MS === 30 * 60 * 1000, ZSA2ARunner.A2A_HARD_CAP_MS);
+
+  let freshNow = false;
+  let newChatClicks = 0;
+  const newChatCtrl = {
+    hidden: false,
+    innerText: "New chat",
+    textContent: "New chat",
+    getAttribute: () => null,
+    getClientRects: () => [{ width: 80, height: 24 }],
+    closest: () => null,
+    click() { newChatClicks++; freshNow = true; },
+  };
+  const virtualizedStaleRunner = ZSA2ARunner.createRunner({
+    provider: {
+      chatIsEmpty: () => true, // virtualized 0 items while hidden
+      isFreshChat: () => freshNow, // false on /s/<id> until New chat clicked
+      getEditor: () => ({}),
+      stopGeneration: () => {},
+      lastAssistant: () => null,
+      itemText: () => "",
+    },
+    state: { running: false, starting: false, injecting: false, started: false, stop: false },
+    doc: { hidden: false, querySelectorAll: () => [newChatCtrl] },
+    sleep: () => Promise.resolve(),
+    diag: () => {},
+    startSession: async () => {},
+    submitAndGetBase: async () => 0,
+    agentLoop: async () => "",
+    sendRuntimeMessage: () => {},
+  });
+  const openedFresh = await virtualizedStaleRunner.openFreshChat();
+  check("openFreshChat clicks New chat when virtualized /s/<id> looks empty but isFreshChat=false",
+    openedFresh === true && newChatClicks === 1, { openedFresh, newChatClicks });
+
+  const capMsgs = [];
+  const capState = { running: false, starting: false, injecting: false, started: true, stop: false };
+  const capRunner = ZSA2ARunner.createRunner({
+    provider: { chatIsEmpty: () => true, stopGeneration: () => {}, lastAssistant: () => null, itemText: () => "" },
+    state: capState,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    diag: () => {},
+    startSession: async () => {},
+    submitAndGetBase: async () => 0,
+    agentLoop: async () => { await new Promise((r) => setTimeout(r, 80)); return ""; },
+    sendRuntimeMessage: (m) => capMsgs.push(m),
+    hardCapMs: 20,
+  });
+  await capRunner.runPrompt("slow", "req-cap");
+  const capRes = capMsgs.find((m) => m.type === "a2a_result" && m.promptId === "req-cap");
+  check("a2a runner hard-cap reports hard cap instead of caller cancel",
+    !!(capRes && capRes.ok === false && /hard cap/i.test(capRes.error || "") && !/caller stopped waiting/i.test(capRes.error || "")),
+    capRes);
 
   // ── ZSDomEngine ──────────────────────────────────────────────────────────
   const domState = { sendToken: null };
@@ -255,6 +308,18 @@ function check(name, cond, detail) {
   check("findNewChatControl finds button on hidden tab without layout rects",
     ZSA2ARunner.findNewChatControl({ hidden: true, querySelectorAll: () => [hiddenBtn] }) === hiddenBtn);
 
+  // Collapsed sidebar drawer (e.g. DeepSeek): tabindex="0" div with 0 client rects on visible tab
+  const collapsedNewChat = {
+    hidden: false,
+    innerText: "",
+    textContent: "New chat",
+    getAttribute: (k) => (k === "tabindex" ? "0" : null),
+    getClientRects: () => [],
+    closest: () => null,
+  };
+  check("findNewChatControl finds collapsed-sidebar [tabindex=0] New chat control on visible tab",
+    ZSA2ARunner.findNewChatControl({ hidden: false, querySelectorAll: () => [collapsedNewChat] }) === collapsedNewChat);
+
   // Manual (non-A2A) session still parks while hidden when backgroundSessions=false
   const manualState = { stop: false, parked: false };
   const manualEngine = ZSDomEngineHidden.createDomEngine({
@@ -351,6 +416,7 @@ function check(name, cond, detail) {
       body: mkEl("body"),
       createElement: (tag) => mkEl(tag),
       createElementNS: (_ns, tag) => mkEl(tag),
+      createTextNode: (t) => ({ nodeType: 3, textContent: String(t) }),
       getElementById: () => null,
       addEventListener: (t, f) => { uiListeners.document[t] = f; },
       hidden: false,
@@ -403,6 +469,26 @@ function check(name, cond, detail) {
   const listenersOk = typeof resize === "function" && typeof onVisible === "function";
   if (listenersOk) { uiSandbox.document.hidden = false; resize(); onVisible(); }
   check("hidden-tab resize/visibility re-place bar and cover", listenersOk, { resize: !!resize, onVisible: !!onVisible });
+
+  const zsBar = docEl.querySelector("#zs-bar");
+  const zsState = docEl.querySelector("#zs-state");
+  check("#zs-bar exposes toolbar semantics",
+    !!(zsBar && zsBar.getAttribute("role") === "toolbar" && zsBar.getAttribute("aria-label") === "Snapgent controls"),
+    zsBar && { role: zsBar.getAttribute("role"), label: zsBar.getAttribute("aria-label") });
+  check("#zs-state exposes status live region",
+    !!(zsState && zsState.getAttribute("role") === "status" && zsState.getAttribute("aria-live") === "polite"),
+    zsState && { role: zsState.getAttribute("role"), live: zsState.getAttribute("aria-live") });
+  uiCtrl.setStatus({ connected: false, servers: [] });
+  const collectTexts = (n) => {
+    if (!n) return "";
+    if (n.nodeType === 3) return n.textContent || "";
+    return (n.children || []).map(collectTexts).join("") || n.textContent || "";
+  };
+  const hasStrongTag = (n) => !!n && (n.tagName === "STRONG" || (n.children || []).some(hasStrongTag));
+  const stateRenderedText = collectTexts(zsState);
+  check("ui-controller renders <b> as <strong> with zero literal tags",
+    hasStrongTag(zsState) && stateRenderedText.includes("start.bat") && !/<b>|<\/b>/.test(stateRenderedText),
+    { hasStrong: hasStrongTag(zsState), stateRenderedText });
 
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
   const required = ["core/channel.js", "core/dom-engine.js", "core/a2a-runner.js", "core/ui-controller.js"];

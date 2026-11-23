@@ -17,6 +17,8 @@ const PLATFORM = typeof navigator !== "undefined" && navigator.platform ? naviga
 const LAUNCHER = /Mac/i.test(PLATFORM) ? "MacOS_Start.command"
   : /Linux|X11/i.test(PLATFORM) ? "Linux_Start.sh"
   : "start.bat";
+const HAS_RUNTIME = typeof chrome !== "undefined" &&
+  !!(chrome && chrome.runtime && typeof chrome.runtime.sendMessage === "function");
 
 
 
@@ -104,11 +106,14 @@ function render(s) {
   // Rotation needs an authenticated socket; the bridge applies the new token live.
   setHidden("rotate-token", !(s.connected && s.savedToken));
   const ver = document.getElementById("ver");
-  const extVer = chrome.runtime.getManifest().version;
+  const extVer = (typeof chrome !== "undefined" && chrome && chrome.runtime &&
+    typeof chrome.runtime.getManifest === "function")
+    ? chrome.runtime.getManifest().version
+    : "";
   // One version normally. The bridge is only named when it differs from the
   // extension, because that mismatch is the only time the number matters.
-  const bridgeMismatch = s.connected && s.bridgeVersion && s.bridgeVersion !== extVer;
-  ver.textContent = bridgeMismatch ? `v${extVer} · bridge ${s.bridgeVersion}` : `v${extVer}`;
+  const bridgeMismatch = s.connected && s.bridgeVersion && extVer && s.bridgeVersion !== extVer;
+  ver.textContent = !extVer ? "" : bridgeMismatch ? `v${extVer} · bridge ${s.bridgeVersion}` : `v${extVer}`;
   tools.textContent = s.connected
     ? `${s.tools || 0} tools`
       + (s.bridgeStatus && s.bridgeStatus.uptime_seconds != null
@@ -170,6 +175,7 @@ function shouldUnpark(status) {
 }
 
 function refresh() {
+  if (!HAS_RUNTIME) return;
   chrome.runtime.sendMessage({ type: "status" }, (s) => {
     if (!s) return;
     if (shouldUnpark(s)) {
@@ -252,11 +258,13 @@ const openSettings = () => {
   });
 };
 const settingsButton = document.getElementById("settings");
-if (settingsButton) settingsButton.addEventListener("click", openSettings);
+if (settingsButton && HAS_RUNTIME) settingsButton.addEventListener("click", openSettings);
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.type === "zs-status") render(msg);
-});
+if (HAS_RUNTIME && chrome.runtime.onMessage && typeof chrome.runtime.onMessage.addListener === "function") {
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === "zs-status") render(msg);
+  });
+}
 // The static HTML names the Windows launcher so it stays readable without JS;
 // correct it to the platform the user is actually on.
 const hint = document.getElementById("launch-hint");
@@ -267,5 +275,7 @@ if (hint) {
   hint.appendChild(code);
   hint.appendChild(document.createTextNode("."));
 }
-refresh();
-setInterval(refresh, 2000);
+if (HAS_RUNTIME) {
+  refresh();
+  setInterval(refresh, 2000);
+}

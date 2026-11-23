@@ -83,3 +83,35 @@ ok("a connected bridge is not retried",
 ok("a bridge that is merely offline is not retried",
   shouldUnpark({ authRequired: false, connected: false }) === false);
 ok("a missing status is not retried", shouldUnpark(null) === false);
+
+// 6. popup.html loads popup.js deferred so rendering is never script-blocked.
+const popupHtml = fs.readFileSync(__dirname + "/../popup.html", "utf8");
+ok("popup.html uses <script src=\"popup.js\" defer>",
+  /<script\s+src="popup\.js"\s+defer><\/script>/.test(popupHtml));
+
+// 7. Standalone HTML preview (chrome undefined) must not throw TypeError.
+const vm = require("vm");
+const standaloneCode = { textContent: "" };
+const standaloneHint = {
+  textContent: "Start with ",
+  children: [],
+  appendChild(c) { this.children.push(c); },
+};
+const standaloneSandbox = {
+  document: {
+    getElementById: (id) => (id === "launch-hint" ? standaloneHint : null),
+    createElement: () => standaloneCode,
+    createTextNode: (t) => ({ nodeType: 3, textContent: String(t) }),
+  },
+  navigator: { platform: "Linux x86_64" },
+  setInterval: () => 0,
+  setTimeout,
+  console,
+};
+let standaloneThrew = null;
+try {
+  vm.runInNewContext(popupSrc, standaloneSandbox, { filename: "popup.js" });
+} catch (err) {
+  standaloneThrew = err;
+}
+ok("popup.js runs cleanly without chrome.runtime", !standaloneThrew && standaloneCode.textContent === "Linux_Start.sh", standaloneThrew);

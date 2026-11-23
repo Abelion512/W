@@ -407,14 +407,17 @@ async function connect() {
     bridgeVersion = null;
     bridgeStatusCache = null;
     bridgeStatusAt = 0;
-    // A dropped socket will never deliver prompt_result or cancel_prompt.
-    promptTabs.clear();
     failAllPending("bridge connection closed");
     broadcastStatus();
     // 1008 is the bridge refusing our token, and redialling just repeats the
     // refusal once a second until the popup saves a token. Park instead, and
     // remember it in storage so the pairing card survives a worker eviction.
+    // Transient disconnects keep promptMeta intact so cancel_prompt and
+    // a2a_result keep their tab/provider mapping across the bridge's 15s
+    // reconnect grace window.
     if (authRequired) {
+      promptMeta.clear();
+      savePromptMeta();
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
       chrome.storage.local.set({ [AUTH_STATE_KEY]: true });
@@ -619,7 +622,7 @@ function handleBridgeMessage(msg) {
   if (msg.type === "cancel_prompt") {
     // The bridge hit its deadline. Tell the tab to stop generating, otherwise
     // the tab stays busy and refuses every later prompt until it is reloaded.
-    cancelPrompt(msg.id);
+    cancelPrompt(msg.id).catch(() => {});
     return;
   }
   if (msg.type === "prompt_ack") {
@@ -692,24 +695,120 @@ function handleBridgeMessage(msg) {
 // Relay a bridge prompt to the active provider tab. Fire-and-forget: the
 // content script answers later via an "a2a_result" runtime message. An MV3
 // worker eviction between the two hops is expected and handled by reconnect.
-// promptId → tabId, so a bridge-side timeout can reach the right tab. Bounded:
-// a result or a cancel removes the entry, and a dropped socket clears the rest.
-const promptTabs = new Map();
-function cancelPrompt(promptId) {
-  const tabId = promptTabs.get(promptId);
-  promptTabs.delete(promptId);
+// promptId -> { tabId, provider, tabUrl, route, started } persisted best-effort
+// in chrome.storage.session so parallel providers and cancels survive worker
+// restarts and transient WebSocket reconnects.
+const PROMPT_META_KEY = "zsPromptMeta";
+const PROMPT_META_TTL_MS = 2 * 60 * 60 * 1000;
+const promptMeta = new Map();
+
+function savePromptMeta() {
+  const cutoff = Date.now() - PROMPT_META_TTL_MS;
+  for (const [id, entry] of promptMeta) {
+    if (entry && entry.started && entry.started < cutoff) promptMeta.delete(id);
+  }
+  while (promptMeta.size > 64) {
+    const oldest = promptMeta.keys().next().value;
+    promptMeta.delete(oldest);
+  }
+  try {
+    const sess = typeof chrome !== "undefined" && chrome.storage && chrome.storage.session;
+    if (sess && typeof sess.set === "function") {
+      const p = sess.set({ [PROMPT_META_KEY]: [...promptMeta.entries()] });
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    }
+  } catch {}
+}
+
+const promptMetaReady = new Promise((resolve) => {
+  let settled = false;
+  const finish = () => { if (!settled) { settled = true; resolve(); } };
+  setTimeout(finish, 500);
+  try {
+    const sess = typeof chrome !== "undefined" && chrome.storage && chrome.storage.session;
+    if (!sess || typeof sess.get !== "function") { finish(); return; }
+    const got = sess.get(PROMPT_META_KEY, (stored) => {
+      const entries = stored && stored[PROMPT_META_KEY];
+      if (Array.isArray(entries)) {
+        const cutoff = Date.now() - PROMPT_META_TTL_MS;
+        for (const pair of entries) {
+          if (Array.isArray(pair) && pair[0] && pair[1] && (!pair[1].started || pair[1].started >= cutoff)) {
+            if (!promptMeta.has(pair[0])) promptMeta.set(pair[0], pair[1]);
+          }
+        }
+      }
+      finish();
+    });
+    if (got && typeof got.then === "function") {
+      got.then((stored) => {
+        const entries = stored && stored[PROMPT_META_KEY];
+        if (Array.isArray(entries)) {
+          const cutoff = Date.now() - PROMPT_META_TTL_MS;
+          for (const pair of entries) {
+            if (Array.isArray(pair) && pair[0] && pair[1] && (!pair[1].started || pair[1].started >= cutoff)) {
+              if (!promptMeta.has(pair[0])) promptMeta.set(pair[0], pair[1]);
+            }
+          }
+        }
+        finish();
+      }).catch(finish);
+    }
+  } catch {
+    finish();
+  }
+});
+
+async function cancelPrompt(promptId) {
+  if (!promptMeta.has(promptId)) await promptMetaReady;
+  const meta = promptMeta.get(promptId);
+  promptMeta.delete(promptId);
+  savePromptMeta();
+  const tabId = meta && meta.tabId;
   if (typeof tabId !== "number") return;
   try {
     chrome.tabs.sendMessage(tabId, { type: "zs-a2a-abort", promptId }, () => void chrome.runtime.lastError);
   } catch { /* tab is gone; nothing to cancel */ }
 }
 
+// DeepSeek unmounts virtualized turns when hidden, and Gemini's Angular streaming
+// renderer pauses rAF stream-end cleanup while backgrounded (leaving stop/aria-busy wedged).
+const NEEDS_VISIBLE_PROVIDERS = new Set(["deepseek", "gemini"]);
+
+async function activateTab(tabId, settleMs = 250) {
+  if (typeof tabId !== "number" || typeof chrome === "undefined" ||
+      !chrome.tabs || typeof chrome.tabs.update !== "function") {
+    return;
+  }
+  try {
+    await new Promise((resolve) => {
+      const maybePromise = chrome.tabs.update(tabId, { active: true }, () => {
+        void (chrome.runtime && chrome.runtime.lastError);
+        resolve();
+      });
+      if (maybePromise && typeof maybePromise.then === "function") {
+        maybePromise.then(resolve, resolve);
+      }
+    });
+  } catch {}
+  if (settleMs > 0) await new Promise((resolve) => setTimeout(resolve, settleMs));
+}
+
 async function handleSubmitPrompt(msg) {
   const promptId = msg.id;
   const reply = (payload) => {
-    promptTabs.delete(promptId);
-    return send({ type: "prompt_result", prompt_id: promptId, ok: !!payload.ok,
-                  text: payload.text || "", error: payload.error || "" }, 15000);
+    const meta = promptMeta.get(promptId) || null;
+    promptMeta.delete(promptId);
+    savePromptMeta();
+    return send({
+      type: "prompt_result",
+      prompt_id: promptId,
+      ok: !!payload.ok,
+      text: payload.text || "",
+      error: payload.error || "",
+      provider: meta ? meta.provider : "",
+      tab_id: meta ? meta.tabId : null,
+      tab_url: meta ? meta.tabUrl : "",
+    }, 15000);
   };
   try {
     const route = routeFor(msg.metadata);
@@ -725,8 +824,27 @@ async function handleSubmitPrompt(msg) {
       tab = tabs.find((t) => t.active) || tabs[0];
     }
     if (!tab) { await reply({ ok: false, error: "No AI chat tab is open." }); return; }
-    promptTabs.set(promptId, tab.id);
-    setUsage({ provider: providerOf(tab.url), effort: route ? route.tier : "auto", tokens: null, seconds: null, ok: null, started: Date.now() });
+    const provider = providerOf(tab.url);
+    const tabUrl = String(tab.url || "");
+    const routeTier = route ? route.tier : "auto";
+    if (NEEDS_VISIBLE_PROVIDERS.has(provider) && !tab.active) {
+      await activateTab(tab.id, 250);
+    }
+    promptMeta.set(promptId, { tabId: tab.id, provider, tabUrl, route: routeTier, started: Date.now() });
+    savePromptMeta();
+    setUsage({ provider, effort: routeTier, tokens: null, seconds: null, ok: null, started: Date.now() });
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({
+          type: "prompt_routed",
+          prompt_id: promptId,
+          provider,
+          tab_id: tab.id,
+          tab_url: tabUrl,
+          route: routeTier,
+        }));
+      } catch {}
+    }
     // A tab that was JUST navigated races the content script's MV3 injection:
     // the first sendMessage can fail with "Receiving end does not exist" even
     // though the script lands a beat later (measured live: Claude after reload).
@@ -805,7 +923,7 @@ function broadcastStatus() {
 }
 
 // ── messages from content.js / popup.js ─────────────────────────────────
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     switch (msg.type) {
       case "status":
@@ -883,19 +1001,33 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         break;
       }
       case "a2a_result": {
-        promptTabs.delete(msg.promptId);
+        if (!promptMeta.has(msg.promptId)) await promptMetaReady;
+        const meta = promptMeta.get(msg.promptId) || null;
+        promptMeta.delete(msg.promptId);
+        savePromptMeta();
+        const provider = (meta && meta.provider) || (lastUsage && lastUsage.provider) || "";
+        const started = (meta && meta.started) || (lastUsage && lastUsage.started) || null;
         setUsage({
+          ...(provider ? { provider } : {}),
+          ...(meta && meta.route ? { effort: meta.route } : {}),
           tokens: typeof msg.tokens === "number" ? msg.tokens : null,
-          seconds: lastUsage && lastUsage.started
-            ? Math.round((Date.now() - lastUsage.started) / 1000) : null,
+          seconds: started ? Math.round((Date.now() - started) / 1000) : null,
           ok: !!msg.ok,
           error: msg.ok ? "" : String(msg.error || "").slice(0, 120),
         });
         if (!msg.ok) {
-          markProviderLimited(lastUsage && lastUsage.provider, msg.error);
+          markProviderLimited(provider, msg.error);
         }
-        await send({ type: "prompt_result", prompt_id: msg.promptId,
-                     ok: !!msg.ok, text: msg.text || "", error: msg.error || "" }, 15000);
+        await send({
+          type: "prompt_result",
+          prompt_id: msg.promptId,
+          ok: !!msg.ok,
+          text: msg.text || "",
+          error: msg.error || "",
+          provider: meta ? meta.provider : "",
+          tab_id: meta ? meta.tabId : null,
+          tab_url: meta ? meta.tabUrl : "",
+        }, 15000);
         sendResponse({ ok: true });
         break;
       }
@@ -918,6 +1050,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         chrome.storage.local.remove(AUTH_STATE_KEY);
         bridgeToken = null; // re-read: the popup may have just saved a token
         connect().catch(() => {});
+        sendResponse({ ok: true });
+        break;
+      case "zs-wake-tab":
+        if (sender && sender.tab && typeof sender.tab.id === "number") {
+          await activateTab(sender.tab.id, 0);
+        }
         sendResponse({ ok: true });
         break;
       default:

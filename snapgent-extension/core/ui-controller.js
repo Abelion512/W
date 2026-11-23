@@ -32,6 +32,21 @@ const ZSUiController = (() => {
     return node;
   }
 
+  function appendFormattedState(container, msg) {
+    const raw = String(msg == null ? "" : msg);
+    const parts = raw.split(/(<b>[\s\S]*?<\/b>)/g);
+    for (const part of parts) {
+      if (!part) continue;
+      if (part.startsWith("<b>") && part.endsWith("</b>")) {
+        container.appendChild(domEl("strong", { text: part.slice(3, -4) }));
+      } else if (typeof document.createTextNode === "function") {
+        container.appendChild(document.createTextNode(part));
+      } else {
+        container.appendChild(domEl("span", { text: part }));
+      }
+    }
+  }
+
   function svgEl(shapes, attrs = {}) {
     const svg = document.createElementNS(SVG_NS, "svg");
     const base = {
@@ -134,8 +149,8 @@ const ZSUiController = (() => {
         domEl("div", { id: "zs-composer-glow", "aria-hidden": "true" }),
         domEl(
           "div",
-          { id: "zs-bar" },
-          domEl("span", { id: "zs-state" }),
+          { id: "zs-bar", role: "toolbar", "aria-label": "Snapgent controls" },
+          domEl("span", { id: "zs-state", role: "status", "aria-live": "polite" }),
           domEl("button", { id: "zs-action" }),
           domEl("button", { id: "zs-stop", hidden: true, text: "■ Stop" }),
           domEl(
@@ -1106,7 +1121,8 @@ const ZSUiController = (() => {
       // layout, making the bar fall back to fixed positioning and overlap).
       bar.classList.remove("tone-standby", "tone-active", "tone-warn", "tone-noagent", "tone-starting");
       bar.classList.add(`tone-${toneClass}`);
-      const stateTxt = domEl("span", { className: "zs-state-txt", text: String(msg == null ? "" : msg) });
+      const stateTxt = domEl("span", { className: "zs-state-txt" });
+      appendFormattedState(stateTxt, msg);
       const stateNodes = showSpinner ? [domEl("span", { className: "zs-spin" }), stateTxt] : [stateTxt];
       stateEl.replaceChildren(...stateNodes);
       stateEl.classList.toggle("zs-state-warn", warn);

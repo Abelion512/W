@@ -215,7 +215,7 @@ On failure the stream emits the same working-task event, then one
 | --- | --- | --- |
 | `ZS_A2A_PORT` | `17614` | HTTP listen port |
 | `ZS_A2A_TOKEN` | random | Bearer token; generated with `secrets.token_urlsafe(32)` and printed when unset |
-| `ZS_A2A_TIMEOUT_MS` | `600000` | Task timeout (10 min) |
+| `ZS_A2A_TIMEOUT_MS` | `1800000` | Task timeout (30 min) |
 | `ZS_A2A_DISABLE` | unset | `1` skips starting the A2A server |
 
 Set them before `bash Linux_Start.sh`, for example:
@@ -231,6 +231,8 @@ ZS_A2A_PORT=19000 ZS_A2A_TOKEN=my-token bash Linux_Start.sh
 | `SendMessage` (`message/send`) | `SendMessageRequest` | `Task` |
 | `SendStreamingMessage` (`message/stream`) | `SendMessageRequest` | SSE stream |
 | `GetTask` (`tasks/get`) | `{id, historyLength}` | `Task` |
+| `CancelTask` (`tasks/cancel`) | `{id}` | `Task` |
+| `Orchestrate` (`tasks/orchestrate`) | `{message, providers}` | `Task` |
 
 ## Errors
 
@@ -252,18 +254,21 @@ ZS_A2A_PORT=19000 ZS_A2A_TOKEN=my-token bash Linux_Start.sh
 - Binds `127.0.0.1` only. No remote access.
 - Bearer token required on every `POST /`. The endpoint drives a logged-in
   browser session and can write workspace files, so it is never unauthenticated.
-- Concurrency 1. All three methods funnel through `Bridge.submit_prompt`, which
-  serialises on an `asyncio.Lock`. A second task waits for the first.
-- The chat tab must be the **foreground tab** of its window. A backgrounded tab
-  pauses the loop.
-- Default task timeout 600 s (`ZS_A2A_TIMEOUT_MS`).
+- Up to 8 concurrent tasks (`MAX_CONCURRENT_SUBMITS = 8`), serialised per
+  provider lock in `Bridge.submit_prompt`; work targeting different providers
+  runs in parallel, while a second task on the same provider waits for the
+  first.
+- A2A prompts run in the pinned tab without user-visible parking; providers
+  with virtualized message lists (`deepseek`) automatically activate their tab
+  so the virtual list mounts DOM turns cleanly.
+- Default task timeout 1800 s / 30 min (`ZS_A2A_TIMEOUT_MS`).
 - No push notifications (`pushNotifications: false` in the card).
-- No task cancel. The extension cannot interrupt a generation cleanly, so
-  `tasks/cancel` is not implemented.
-- The extension websocket on `ws://127.0.0.1:17613` is not authenticated. The
-  bridge sends a prompt to a single socket and accepts its reply only from that
-  socket, but a local process that connects can still interfere. See the Risks
-  section of `docs/a2a-design.md`.
+- Task cancellation is supported via `tasks/cancel` (`CancelTask`), which aborts
+  in-flight execution and transitions the task to `TASK_STATE_CANCELED`.
+- The extension websocket on `ws://127.0.0.1:17613` requires the bearer token in
+  `~/.snapgent/bridge_token` by default (`ZS_BRIDGE_AUTH=auto-pair` opts out on
+  a single-user desktop; `snapgent` still binds prompts and results to the
+  originating socket). See the Risks section of `docs/a2a-design.md`.
 
 ## Supported local clients
 
@@ -309,7 +314,7 @@ The helper always sends a `metadata` object (including `timeoutMs`) and accepts
 
 Point the client at `http://127.0.0.1:17614`, read the bearer token from
 `~/.snapgent/a2a_token`, and send `SendMessage` with `metadata.provider` set to
-the web AI to use. Use a timeout of at least 600 seconds. The v0.3 method
+the web AI to use. Use a timeout of at least 1800 seconds. The v0.3 method
 aliases are accepted as well.
 
 Routing may also be steered with capability metadata. All four flags are

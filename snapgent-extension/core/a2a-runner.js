@@ -9,20 +9,22 @@ const ZSA2ARunner = (() => {
   // text then starts with its status line (measured live: Kimi -> "Thinking
   // process      PONG"). Strip those leading status lines and nothing else.
   const REASONING_HEAD = /^(thinking (process|complete)|thought for \d+(?:\.\d+)?\s*s(?:ec(?:onds?)?)?)\s*[:.\-]?\s*/i;
-  const A2A_HARD_CAP_MS = 15 * 60 * 1000;
+  const A2A_HARD_CAP_MS = 30 * 60 * 1000;
 
   function findNewChatControl(doc) {
     const rootDoc = doc || (typeof document !== "undefined" ? document : null);
     if (!rootDoc || typeof rootDoc.querySelectorAll !== "function") return null;
-    const candidates = [...rootDoc.querySelectorAll('button, a, [role="button"]')];
-    return candidates.find((el) => {
+    const candidates = [...rootDoc.querySelectorAll('button, a, [role="button"], [tabindex="0"]')];
+    const matches = candidates.filter((el) => {
       if (el.closest && el.closest("#zs-root")) return false;
       if (el.hidden || (el.getAttribute && el.getAttribute("aria-hidden") === "true")) return false;
-      if (!rootDoc.hidden && (!el.getClientRects || !el.getClientRects().length)) return false;
       const label = (el.innerText || (el.getAttribute && el.getAttribute("aria-label")) || el.textContent || "")
         .trim().replace(/\s+/g, " ");
       return NEW_CHAT_LABEL.test(label);
-    }) || null;
+    });
+    if (!matches.length) return null;
+    // Prefer rendered controls first, falling back when sidebar drawers collapse rects to 0 (e.g. DeepSeek).
+    return matches.find((el) => el.getClientRects && el.getClientRects().length > 0) || matches[0];
   }
 
   function cleanA2AText(raw) {
@@ -58,6 +60,7 @@ const ZSA2ARunner = (() => {
     const chunkIntervalMs = deps.chunkIntervalMs == null ? 600 : deps.chunkIntervalMs;
 
     let a2aAborted = false;
+    let a2aAbortReason = "";
     let a2aCurrentId = null;
     let a2aChunkId = null;
     let a2aChunkLen = 0;
@@ -90,6 +93,7 @@ const ZSA2ARunner = (() => {
     }
 
     function freshChatReady() {
+      if (typeof P.isFreshChat === "function") return !!P.isFreshChat();
       if (!P.chatIsEmpty()) return false;
       return typeof P.getEditor === "function" ? !!P.getEditor() : true;
     }
@@ -114,6 +118,7 @@ const ZSA2ARunner = (() => {
     function abort(reason) {
       if (!a2aCurrentId) return;
       a2aAborted = true;
+      a2aAbortReason = String(reason || "cancelled");
       A.stop = true;
       try { P.stopGeneration(); } catch {}
       diag("a2a.abort", { reason, promptId: a2aCurrentId });
@@ -132,6 +137,7 @@ const ZSA2ARunner = (() => {
           throw new Error("The web AI is already working on another task.");
         }
         a2aAborted = false;
+        a2aAbortReason = "";
         a2aCurrentId = promptId;
         const cap = setTimeout(() => abort("hard-cap"), hardCapMs);
         let loopText = "";
@@ -168,7 +174,10 @@ const ZSA2ARunner = (() => {
           clearTimeout(cap);
         }
         if (a2aAborted) {
-          reply({ ok: false, error: "The task was cancelled: the caller stopped waiting." });
+          const msg = a2aAbortReason === "hard-cap"
+            ? "The task hit the extension hard cap without completing."
+            : "The task was cancelled: the caller stopped waiting.";
+          reply({ ok: false, error: msg });
           return;
         }
         const item = P.lastAssistant();
@@ -185,6 +194,7 @@ const ZSA2ARunner = (() => {
       } finally {
         if (a2aCurrentId === promptId) a2aCurrentId = null;
         a2aAborted = false;
+        a2aAbortReason = "";
       }
     }
 

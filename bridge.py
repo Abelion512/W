@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Handshake policy (Origin allowlist, per-install token, token file handling)
 # lives in bridge_auth.py; the names are re-exported here because bridge.py is the
 # entry point and the tests configure auth through this module.
+import activity_audit
 import context_sandbox
 
 from bridge_auth import (
@@ -50,6 +51,7 @@ __all__ = [
     "AUTH_DISABLED_VALUES",
     "TOKEN_PATH_ENV",
     "auth_disabled",
+    "strict_auth",
 ]
 
 try:
@@ -362,21 +364,34 @@ class MCPServer:
         process = self.process
         if not process or not process.stdout:
             return
+        leftover = bytearray()
         try:
             while True:
                 try:
-                    line = await process.stdout.readline()
+                    nl_pos = leftover.find(b"\n")
+                    if nl_pos != -1:
+                        line = bytes(leftover[: nl_pos + 1])
+                        del leftover[: nl_pos + 1]
+                    elif leftover:
+                        prefix = bytes(leftover)
+                        leftover.clear()
+                        tail = await process.stdout.readline()
+                        line = prefix + tail
+                    else:
+                        line = await process.stdout.readline()
                 except ValueError:
-                    # Response line exceeded the stream limit. Discard the rest of it.
-                    # StreamReader drops the partial buffer when it raises, so the
-                    # request id cannot be recovered. MCP stdio answers requests in
-                    # order: the oldest pending call is the one being answered. Fail
-                    # only that call, and pop it now so its late response cannot be
-                    # mistaken for a live request. Unrelated calls keep waiting.
+                    # Response line exceeded the stream limit. Discard the rest of
+                    # this line while preserving any trailing JSON-RPC frames read
+                    # in the same chunk.
                     log(f"[{self.server_id}] MCP response exceeded the buffer limit; discarding it.")
                     while True:
                         chunk = await process.stdout.read(1024 * 1024)
-                        if not chunk or b"\n" in chunk:
+                        if not chunk:
+                            break
+                        nl = chunk.find(b"\n")
+                        if nl != -1:
+                            if nl + 1 < len(chunk):
+                                leftover.extend(chunk[nl + 1:])
                             break
                     if self._pending:
                         request_id = next(iter(self._pending))
@@ -487,7 +502,12 @@ def web_search_pii_violations(prompt: str, metadata: Optional[Dict[str, Any]] = 
 
 
 class Bridge:
-    def __init__(self, token: Optional[str] = None, disconnect_grace: float = 0.0) -> None:
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        disconnect_grace: float = 0.0,
+        audit_log: Optional[Any] = None,
+    ) -> None:
         self.servers: Dict[str, MCPServer] = {}
         self.clients = set()
         self._client_lock = asyncio.Lock()
@@ -499,6 +519,7 @@ class Bridge:
         self._disconnect_grace: float = max(0.0, float(disconnect_grace))
         self._reject_log: Dict[str, Tuple[float, int]] = {}
         self._rotate_lock = asyncio.Lock()
+        self._audit = audit_log if audit_log is not None else activity_audit.get_audit_log()
         # A2A delegation. Fan-out: one lock PER PROVIDER, so tasks pinned to
         # different chat tabs can run at the same time while two tasks for the
         # same tab still queue (a tab has only one composer).
@@ -510,6 +531,7 @@ class Bridge:
         self._prompt_owners: Dict[str, Any] = {}
         self._task_to_prompt: Dict[str, str] = {}
         self._prompt_to_task: Dict[str, str] = {}
+        self._prompt_audit: Dict[str, Dict[str, Any]] = {}
         self._disconnect_timers: Dict[Any, asyncio.TimerHandle] = {}
         self._a2a_server: Any = None
         # websocket -> presented a valid bridge token at handshake
@@ -518,6 +540,39 @@ class Bridge:
         # prompt ids whose context is sandbox-only; tool calls from their owner
         # socket are rejected while they run.
         self._context_only_prompts: set = set()
+
+    def _audit_fields_for_prompt(self, prompt_id: Optional[str]) -> Dict[str, Any]:
+        if not isinstance(prompt_id, str) or not prompt_id:
+            return {}
+        entry = self._prompt_audit.get(prompt_id)
+        if not entry:
+            return {"prompt_id": prompt_id}
+        return {k: v for k, v in entry.items() if not k.startswith("_")}
+
+    def _record_tool_audit(
+        self,
+        name: Any,
+        server_id: Optional[str],
+        arguments: Any,
+        prompt_id: Any,
+        started: float,
+        ok: bool,
+        kind: str = "",
+        error: str = "",
+    ) -> None:
+        pctx = self._audit_fields_for_prompt(prompt_id) if isinstance(prompt_id, str) else {}
+        arg_keys = sorted(str(k) for k in arguments.keys()) if isinstance(arguments, dict) else []
+        self._audit.record(
+            "bridge.tool_call",
+            tool_name=activity_audit.sanitize_text(name, 128),
+            server_id=server_id,
+            arg_keys=arg_keys,
+            ok=ok,
+            kind=kind,
+            duration_ms=round((time.monotonic() - started) * 1000),
+            error=activity_audit.sanitize_text(error) if error else "",
+            **pctx,
+        )
 
     def load_config(self) -> Dict[str, Dict[str, Any]]:
         if not CONFIG_PATH.exists():
@@ -822,6 +877,10 @@ class Bridge:
         prompt_id = self._task_to_prompt.get(task_id)
         if not prompt_id:
             return False
+        pctx = self._audit_fields_for_prompt(prompt_id)
+        pctx.setdefault("task_id", task_id)
+        pctx.setdefault("prompt_id", prompt_id)
+        self._audit.record("bridge.prompt_canceled", **pctx)
         owner = self._prompt_owners.get(prompt_id)
         if owner is not None:
             try:
@@ -839,6 +898,7 @@ class Bridge:
         timeout: float,
         metadata: Optional[Dict[str, Any]] = None,
         task_id: Optional[str] = None,
+        audit_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Delegate one prompt to the browser extension. Fan-out by provider.
 
@@ -848,7 +908,11 @@ class Bridge:
         long never starts a generation the caller has given up on.
         ``metadata`` is forwarded unchanged so the extension can route the task.
         """
+        base_ctx: Dict[str, Any] = dict(audit_context or {})
+        if isinstance(task_id, str) and task_id:
+            base_ctx.setdefault("task_id", task_id)
         if not isinstance(prompt, str) or not prompt.strip():
+            self._audit.record("bridge.prompt_rejected", error="Empty prompt.", **base_ctx)
             return {"ok": False, "error": "Empty prompt."}
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -856,6 +920,11 @@ class Bridge:
         metadata = metadata if isinstance(metadata, dict) else {}
         violations = web_search_pii_violations(prompt, metadata)
         if violations:
+            self._audit.record(
+                "bridge.prompt_rejected",
+                error=f"PII guard blocked: {', '.join(violations)}",
+                **base_ctx,
+            )
             return {
                 "ok": False,
                 "error": (
@@ -871,6 +940,12 @@ class Bridge:
         async with lock:
             remaining = deadline - loop.time()
             if remaining <= 0:
+                self._audit.record(
+                    "bridge.prompt_rejected",
+                    error=timed_out["error"],
+                    provider_requested=provider,
+                    **base_ctx,
+                )
                 return timed_out
             async with self._client_lock:
                 if self._last_client in self.clients:
@@ -878,6 +953,12 @@ class Bridge:
                 else:
                     client = next(iter(self.clients), None)
                 if client is None:
+                    self._audit.record(
+                        "bridge.prompt_rejected",
+                        error="No Snapgent extension is connected.",
+                        provider_requested=provider,
+                        **base_ctx,
+                    )
                     return {"ok": False, "error": "No Snapgent extension is connected."}
             prompt_id = f"p{uuid.uuid4().hex}"
             # Local until the prompt is actually sent: every early return below
@@ -885,6 +966,7 @@ class Bridge:
             # pending prompt, so it must not leave the flag set for the NEXT
             # task either.
             context_only = bool(metadata.get("contextOnly"))
+            context_files_count = 0
             requested = metadata.get("contextFiles")
             if isinstance(requested, list) and requested:
                 # Only the named files go to the web chat. The copy is kept on
@@ -900,12 +982,27 @@ class Bridge:
                         else None,
                     )
                 except Exception as error:  # noqa: BLE001 - surface any sandbox failure
+                    self._audit.record(
+                        "bridge.prompt_rejected",
+                        prompt_id=prompt_id,
+                        provider_requested=provider,
+                        error=f"Context sandbox failed: {activity_audit.sanitize_text(error)}",
+                        **base_ctx,
+                    )
                     return {"ok": False, "error": f"Context sandbox failed: {error}"}
                 if not sandbox["files"]:
+                    self._audit.record(
+                        "bridge.prompt_rejected",
+                        prompt_id=prompt_id,
+                        provider_requested=provider,
+                        error="Context sandbox: none of the requested files could be read.",
+                        **base_ctx,
+                    )
                     return {
                         "ok": False,
                         "error": "Context sandbox: none of the requested files could be read.",
                     }
+                context_files_count = len(sandbox["files"])
                 note = (
                     "[TOOLS DISABLED] This task is context-only: every tool call is "
                     "rejected. Work only from the context below.\n\n"
@@ -930,6 +1027,13 @@ class Bridge:
             # Re-check the FINAL prompt: contextFiles content is appended above
             # and must not smuggle PII into a web-search task.
             if web_search_pii_violations(prompt, metadata):
+                self._audit.record(
+                    "bridge.prompt_rejected",
+                    prompt_id=prompt_id,
+                    provider_requested=provider,
+                    error="HARD STOP: web search blocked - rendered prompt contains personal data.",
+                    **base_ctx,
+                )
                 return {"ok": False, "error": "HARD STOP: web search blocked - the rendered prompt contains personal data."}
             future: asyncio.Future = loop.create_future()
             self._pending_prompts[prompt_id] = future
@@ -939,6 +1043,21 @@ class Bridge:
                 self._prompt_to_task[prompt_id] = task_id
             if context_only:
                 self._context_only_prompts.add(prompt_id)
+            started_at = time.monotonic()
+            prompt_ctx = {
+                **base_ctx,
+                "prompt_id": prompt_id,
+                "provider_requested": provider,
+                "lock_key": lock_key,
+                "context_only": context_only,
+            }
+            self._prompt_audit[prompt_id] = {**prompt_ctx, "_started": started_at}
+            self._audit.record(
+                "bridge.prompt_dispatched",
+                prompt_chars=len(prompt),
+                context_files_count=context_files_count,
+                **prompt_ctx,
+            )
             try:
                 sent = await self._send_client(
                     client,
@@ -950,9 +1069,30 @@ class Bridge:
                     },
                 )
                 if not sent:
+                    self._audit.record(
+                        "bridge.prompt_rejected",
+                        error="The Snapgent extension disconnected before the prompt could be delivered.",
+                        **self._audit_fields_for_prompt(prompt_id),
+                    )
                     return {"ok": False, "error": "The Snapgent extension disconnected before the prompt could be delivered."}
-                return await asyncio.wait_for(future, remaining)
+                result = await asyncio.wait_for(future, remaining)
+                duration_ms = round((time.monotonic() - started_at) * 1000)
+                self._audit.record(
+                    "bridge.prompt_resolved",
+                    ok=bool(result.get("ok")),
+                    duration_ms=duration_ms,
+                    reply_chars=len(str(result.get("text") or "")),
+                    error=activity_audit.sanitize_text(result.get("error")),
+                    **self._audit_fields_for_prompt(prompt_id),
+                )
+                return result
             except asyncio.TimeoutError:
+                duration_ms = round((time.monotonic() - started_at) * 1000)
+                self._audit.record(
+                    "bridge.prompt_timeout",
+                    duration_ms=duration_ms,
+                    **self._audit_fields_for_prompt(prompt_id),
+                )
                 # Tell the tab to stop generating. Without this the web AI keeps
                 # streaming after the caller has given up, and the tab refuses
                 # every later prompt until someone reloads the page by hand.
@@ -966,10 +1106,29 @@ class Bridge:
             finally:
                 self._pending_prompts.pop(prompt_id, None)
                 self._prompt_owners.pop(prompt_id, None)
+                self._prompt_audit.pop(prompt_id, None)
                 self._context_only_prompts.discard(prompt_id)
                 task_id = self._prompt_to_task.pop(prompt_id, None)
                 if task_id:
                     self._task_to_prompt.pop(task_id, None)
+
+    def _update_prompt_route_audit(self, prompt_id: str, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        entry = self._prompt_audit.get(prompt_id)
+        if entry is None:
+            return None
+        provider = request.get("provider")
+        if isinstance(provider, str) and provider.strip():
+            entry["provider"] = activity_audit.sanitize_text(provider, 64)
+        tab_id = request.get("tab_id")
+        if isinstance(tab_id, int) and not isinstance(tab_id, bool):
+            entry["tab_id"] = tab_id
+        tab_url = activity_audit.sanitize_url(request.get("tab_url"))
+        if tab_url:
+            entry["tab_url"] = tab_url
+        route = request.get("route")
+        if isinstance(route, str) and route.strip():
+            entry["route_tier"] = activity_audit.sanitize_text(route, 32)
+        return self._audit_fields_for_prompt(prompt_id)
 
     async def _resolve_prompt(self, websocket: Any, request: Dict[str, Any]) -> None:
         prompt_id = request.get("prompt_id")
@@ -977,6 +1136,8 @@ class Bridge:
         if websocket is not self._prompt_owners.get(prompt_id):
             await self._send_client(websocket, {"type": "prompt_ack", "id": request.get("id")})
             return
+        if isinstance(prompt_id, str):
+            self._update_prompt_route_audit(prompt_id, request)
         future = self._pending_prompts.pop(prompt_id, None) if isinstance(prompt_id, str) else None
         if future is not None and not future.done():
             if request.get("ok"):
@@ -992,11 +1153,22 @@ class Bridge:
             self._log_rejection(
                 f"host:{host}", f"rejected client with unauthorized host header {host!r}"
             )
+            self._audit.record(
+                "bridge.handshake_rejected",
+                reason="unauthorized_host",
+                host=activity_audit.sanitize_text(host, 128),
+                origin=activity_audit.sanitize_text(origin, 160),
+            )
             await self._reject_handshake(websocket, "unauthorized host header")
             return
         if not origin_allowed(origin):
             self._log_rejection(
                 f"origin:{origin}", f"rejected client from origin {origin!r}"
+            )
+            self._audit.record(
+                "bridge.handshake_rejected",
+                reason="origin_not_allowed",
+                origin=activity_audit.sanitize_text(origin, 160),
             )
             await self._reject_handshake(websocket, "origin not allowed")
             return
@@ -1008,6 +1180,11 @@ class Bridge:
             self._log_rejection(
                 "token", "rejected client with a missing or invalid bridge token"
             )
+            self._audit.record(
+                "bridge.handshake_rejected",
+                reason="bridge_token_required",
+                origin=activity_audit.sanitize_text(origin, 160),
+            )
             await self._reject_handshake(websocket, "bridge token required")
             return
         self._client_token_auth[websocket] = has_token
@@ -1015,6 +1192,12 @@ class Bridge:
             self.clients.add(websocket)
             self._last_client = websocket
         adopted = self._adopt_orphaned_prompts(websocket)
+        self._audit.record(
+            "bridge.extension_reconnected" if adopted else "bridge.extension_connected",
+            origin=activity_audit.sanitize_text(origin, 160),
+            adopted_prompts=adopted,
+            token_auth=has_token,
+        )
         if adopted:
             log(f"extension reconnected; resumed {adopted} in-flight prompt(s)")
         else:
@@ -1077,6 +1260,12 @@ class Bridge:
             # through a short reconnect grace window so MV3 worker restarts in
             # long sessions do not abort live browser generations.
             owns_prompts = any(owner is websocket for owner in self._prompt_owners.values())
+            self._audit.record(
+                "bridge.extension_disconnected",
+                origin=activity_audit.sanitize_text(origin, 160),
+                owns_prompts=owns_prompts,
+                grace_seconds=self._disconnect_grace if (owns_prompts and self._disconnect_grace > 0) else 0,
+            )
             if owns_prompts:
                 if self._disconnect_grace > 0:
                     loop = asyncio.get_running_loop()
@@ -1165,6 +1354,12 @@ class Bridge:
             await self._change_server(websocket, request, remove=True)
         elif kind == "prompt_result":
             await self._resolve_prompt(websocket, request)
+        elif kind == "prompt_routed":
+            prompt_id = request.get("prompt_id")
+            if isinstance(prompt_id, str) and websocket is self._prompt_owners.get(prompt_id):
+                fields = self._update_prompt_route_audit(prompt_id, request)
+                if fields is not None:
+                    self._audit.record("bridge.prompt_routed", **fields)
         elif kind == "prompt_chunk":
             prompt_id = request.get("prompt_id")
             if isinstance(prompt_id, str) and websocket is self._prompt_owners.get(prompt_id):
@@ -1179,19 +1374,27 @@ class Bridge:
             )
 
     async def _call_tool(self, websocket: Any, request: Dict[str, Any]) -> None:
+        started = time.monotonic()
         request_id = request.get("id")
         name = request.get("name")
         arguments = request.get("arguments") or {}
         timeout = request.get("timeout", 120000)
+        prompt_id = request.get("promptId")
         if not isinstance(name, str) or not isinstance(arguments, dict):
+            self._record_tool_audit(
+                name, None, arguments, prompt_id, started, False, "invalid", "Invalid tool call."
+            )
             await self._send_client(
                 websocket,
                 {"type": "tool_result", "id": request_id, "ok": False, "error": "Invalid tool call."},
             )
             return
-        prompt_id = request.get("promptId")
         if (isinstance(prompt_id, str) and prompt_id in self._context_only_prompts
                 and self._prompt_owners.get(prompt_id) is websocket):
+            self._record_tool_audit(
+                name, None, arguments, prompt_id, started, False, "context_only",
+                "This task is context-only; tool calls are disabled.",
+            )
             await self._send_client(
                 websocket,
                 {
@@ -1269,6 +1472,11 @@ class Bridge:
                 if allowed_server and allowed_server.alive and any(t["name"] == name for t in allowed_server.tools):
                     server, tool_name = allowed_server, name
             if server is not None and server.server_id != allowed:
+                err_msg = f"MCP tool not available for the selected server: {name}"
+                self._record_tool_audit(
+                    name, getattr(server, "server_id", None), arguments, prompt_id, started, False,
+                    "unknown_tool", err_msg,
+                )
                 await self._send_client(
                     websocket,
                     {
@@ -1276,11 +1484,15 @@ class Bridge:
                         "id": request_id,
                         "ok": False,
                         "kind": "unknown_tool",
-                        "error": f"MCP tool not available for the selected server: {name}",
+                        "error": err_msg,
                     },
                 )
                 return
         if not server:
+            err_msg = f"Unknown or unavailable MCP tool: {name}"
+            self._record_tool_audit(
+                name, None, arguments, prompt_id, started, False, "unknown_tool", err_msg
+            )
             await self._send_client(
                 websocket,
                 {
@@ -1288,10 +1500,11 @@ class Bridge:
                     "id": request_id,
                     "ok": False,
                     "kind": "unknown_tool",
-                    "error": f"Unknown or unavailable MCP tool: {name}",
+                    "error": err_msg,
                 },
             )
             return
+        server_id = getattr(server, "server_id", None)
         try:
             result = await server.call_tool(tool_name, arguments, timeout_seconds)
             text_parts = []
@@ -1317,11 +1530,18 @@ class Bridge:
                     text_parts.append(str(structured))
             text = "\n".join(text_parts)
             if result.get("isError"):
+                self._record_tool_audit(
+                    name, server_id, arguments, prompt_id, started, False, "tool_error",
+                    text or "MCP tool failed.",
+                )
                 await self._send_client(
                     websocket,
                     {"type": "tool_result", "id": request_id, "ok": False, "error": text or "MCP tool failed."},
                 )
             else:
+                self._record_tool_audit(
+                    name, server_id, arguments, prompt_id, started, True, "ok"
+                )
                 await self._send_client(
                     websocket,
                     {"type": "tool_result", "id": request_id, "ok": True, "text": text, "images": images},
@@ -1331,13 +1551,17 @@ class Bridge:
             log(f"<- {name} (ok)")
         except (asyncio.TimeoutError, RuntimeError, OSError, ValueError) as error:
             message = str(error)
+            err_kind = "timeout" if isinstance(error, asyncio.TimeoutError) else "tool_error"
+            self._record_tool_audit(
+                name, server_id, arguments, prompt_id, started, False, err_kind, message
+            )
             await self._send_client(
                 websocket,
                 {
                     "type": "tool_result",
                     "id": request_id,
                     "ok": False,
-                    "kind": "timeout" if isinstance(error, asyncio.TimeoutError) else "tool_error",
+                    "kind": err_kind,
                     "error": message,
                 },
             )
@@ -1447,8 +1671,12 @@ def build_a2a_server(bridge: "Bridge", loop: asyncio.AbstractEventLoop) -> Any:
     ) -> Dict[str, Any]:
         srv = server_ref[0]
         tid = srv.current_task_id() if srv is not None else None
+        audit_ctx = srv.current_audit_context() if srv is not None else None
         future = asyncio.run_coroutine_threadsafe(
-            bridge.submit_prompt(prompt, task_timeout, metadata, task_id=tid), loop
+            bridge.submit_prompt(
+                prompt, task_timeout, metadata, task_id=tid, audit_context=audit_ctx
+            ),
+            loop,
         )
         try:
             return future.result(task_timeout + 60)
@@ -1513,15 +1741,16 @@ async def run() -> None:
     log(f"snapgent bridge v{BRIDGE_VERSION}")
     log(f"listening on ws://{HOST}:{PORT} - load the extension and open a supported AI chat")
     if token:
-        if strict_auth():
-            source = TOKEN_ENV if (os.environ.get(TOKEN_ENV) or "").strip() else str(token_path())
-            log(f"auth: strict - every client must present the token from {source}; "
-                "origin allowlist enforced")
-        else:
+        if not token_required_for("chrome-extension://probe"):
             log(
-                "auth: extensions pair automatically (origin allowlist); other "
-                f"local clients need the token from {token_path()} "
-                f"(set {AUTH_DISABLE_ENV}=strict to require it from extensions too)"
+                "auth: auto-pair enabled (extension origin allowlist); native "
+                f"clients need the token from {token_path()}"
+            )
+        else:
+            source = TOKEN_ENV if (os.environ.get(TOKEN_ENV) or "").strip() else str(token_path())
+            log(
+                f"auth: token required from every client (from {source}; "
+                f"set {AUTH_DISABLE_ENV}=auto-pair to exempt extensions on a trusted host)"
             )
         if created:
             # The token itself never goes into the log: bridge_debug.log is a

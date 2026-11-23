@@ -254,7 +254,9 @@ const ZSProvider = (() => {
         if (isVisible(el)) return true;
       }
       for (const el of document.querySelectorAll(TASK_BUSY_SEL)) {
-        if (isVisible(el)) return true;
+        if (!isVisible(el)) continue;
+        if (el.closest && (el.closest(S.userItem) || el.closest(S.reply))) continue;
+        return true;
       }
       const last = lastAssistant();
       if (last && TASK_THINKING_RE.test(textWithout(last, S.reply))) {
@@ -474,6 +476,17 @@ const ZSProvider = (() => {
     if (lines.length > INSERT_CHUNK_LINES) diag("send.insertDone", { lines: lines.length, ms: Date.now() - t0 });
   }
 
+  function requestTabWake() {
+    try {
+      if (typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
+        diag("send.wakeTab", {});
+        chrome.runtime.sendMessage({ type: "zs-wake-tab" }, () => void (chrome.runtime && chrome.runtime.lastError));
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
   async function typeAndSend(text, images) {
     const ed = getEditor();
     if (!ed) throw new Error("Gemini input box not found");
@@ -501,6 +514,10 @@ const ZSProvider = (() => {
         diag("attach.beforeCall", { count: images.length });
         try { const ok = await attachImages(images); diag("attach.afterCall", { ok }); }
         catch (e) { diag("attach.threw", { msg: String((e && e.message) || e) }); }
+      }
+      if (!sendButton() && typeof document !== "undefined" && document.hidden) {
+        requestTabWake();
+        await waitFor(() => !!sendButton(), 1500);
       }
       // A generation that just ended can leave the action button WEDGED on the
       // stop icon (see unwedgeStop), so arrow_upward never appears and the send
@@ -544,13 +561,23 @@ const ZSProvider = (() => {
       [...document.querySelectorAll("button")].find(
         (b) => b.offsetParent !== null && /hydrogen|neon/i.test(b.textContent || "")
       );
+    const pickerButton = () =>
+      modelButton() ||
+      [...document.querySelectorAll("button")].find(
+        (b) => b.offsetParent !== null && /mode picker/i.test(b.getAttribute("aria-label") || "")
+      ) ||
+      null;
     const item = (re) =>
       [...document.querySelectorAll("gem-menu-item")].find(
         (m) => m.getAttribute("role") === "menuitemradio" && re.test((m.textContent || "").trim())
       );
     const selected = (m) => !!m && /\bselected\b/.test(String(m.className || ""));
     const btn = modelButton();
-    if (!btn) return;
+    if (!btn) {
+      const fallbackBtn = pickerButton();
+      const observed = fallbackBtn ? (fallbackBtn.textContent || "").trim() : "";
+      return { applied: false, model: observed || "unknown", thinking: "" };
+    }
     if (!document.querySelector("gem-menu-item")) {
       try { btn.click(); } catch {}
     }
@@ -568,13 +595,30 @@ const ZSProvider = (() => {
       return !!b && /\bhigh\b/i.test(b.textContent || "");
     }, 4000);
     try { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch {}
+    const afterBtn = pickerButton();
+    const afterText = afterBtn ? (afterBtn.textContent || "").trim() : "";
+    const applied = /4\s*hydrogen/i.test(afterText) && /\bhigh\b/i.test(afterText);
+    return {
+      applied,
+      model: applied ? "4 Hydrogen" : (afterText || "unknown"),
+      thinking: /\bhigh\b/i.test(afterText) ? "High" : "",
+    };
   }
 
   // No other site modes to enforce on Gemini.
   function enforceComposer() { return { ready: true }; }
   async function ensureComposerReady(reason) {
-    if (reason === "startup") await ensureFocusMode();
-    const state = { ready: !!getEditor(), model: "4 Hydrogen", thinking: "High" };
+    let mode = { applied: false, model: "", thinking: "" };
+    if (reason === "startup") {
+      mode = await ensureFocusMode();
+    } else {
+      const btn = [...document.querySelectorAll("button")].find(
+        (b) => b.offsetParent !== null && (/hydrogen|neon/i.test(b.textContent || "") || /mode picker/i.test(b.getAttribute("aria-label") || ""))
+      );
+      const txt = btn ? (btn.textContent || "").trim() : "";
+      mode = { applied: /4\s*hydrogen/i.test(txt) && /\bhigh\b/i.test(txt), model: txt || "unknown", thinking: /\bhigh\b/i.test(txt) ? "High" : "" };
+    }
+    const state = { ready: !!getEditor(), model: mode.model, thinking: mode.thinking, modeApplied: mode.applied };
     diag("mode_ready", { reason, provider: "gemini", ...state });
     return state;
   }

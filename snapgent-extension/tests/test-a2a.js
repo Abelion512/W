@@ -36,6 +36,7 @@ StubWebSocket.CLOSED = 3;
 
 // ── Stub chrome ─────────────────────────────────────────────────────────────
 const tabSends = [];   // {tabId, msg} from chrome.tabs.sendMessage
+const tabUpdates = []; // {tabId, props} from chrome.tabs.update
 let onRuntimeMessage = null;
 // Error a real tabs.sendMessage hands back on its callback. The relay must
 // treat "message port closed" as SUCCESS (the content script replies later by
@@ -79,6 +80,12 @@ const chrome = {
       if (cb) { lastError = nextSendError; cb(); }
       return Promise.resolve();
     },
+    update: (tabId, props, cb) => {
+      tabUpdates.push({ tabId, props });
+      const updated = { id: tabId, active: !!(props && props.active) };
+      if (cb) cb(updated);
+      return Promise.resolve(updated);
+    },
   },
 };
 
@@ -96,7 +103,7 @@ const importScripts = (relpath) => {
 
 const src = fs.readFileSync(__dirname + "/../background.js", "utf8");
 const api = new Function("chrome", "WebSocket", "importScripts",
-  src + "; return { handleBridgeMessage, handleSubmitPrompt, routeFor, tabForRoute, TIER_PROVIDERS, CATEGORY_PROVIDERS, PROVIDER_HOSTS, PROVIDER_CAPABILITIES };"
+  src + "; return { handleBridgeMessage, handleSubmitPrompt, routeFor, tabForRoute, isProviderLimited, TIER_PROVIDERS, CATEGORY_PROVIDERS, PROVIDER_HOSTS, PROVIDER_CAPABILITIES };"
 )(chrome, StubWebSocket, importScripts);
 
 const results = [];
@@ -359,6 +366,68 @@ const until = async (cond, ms = 1000) => {
   api.handleBridgeMessage({ type: "prompt_ack", id: 5 });
   await new Promise((r) => setTimeout(r, 50));
   ok("prompt_ack sends nothing back", frames.length === before);
+
+  // ── promptMeta: prompt_routed, parallel provider isolation, transient close ──
+  tabsForQuery = [
+    { id: 81, active: true, url: "https://gemini.google.com/u/5/app/abc" },
+    { id: 82, active: false, url: "https://chat.deepseek.com/a/chat" },
+  ];
+  tabSends.length = 0;
+  frames.length = 0;
+  await api.handleSubmitPrompt({ id: "p-gem", prompt: "g", metadata: { provider: "gemini" } });
+  await api.handleSubmitPrompt({ id: "p-ds", prompt: "d", metadata: { provider: "deepseek" } });
+  const routedGem = frames.find((f) => f.type === "prompt_routed" && f.prompt_id === "p-gem");
+  const routedDs = frames.find((f) => f.type === "prompt_routed" && f.prompt_id === "p-ds");
+  ok("prompt_routed emitted for gemini with provider and tab_url",
+     routedGem && routedGem.provider === "gemini" && routedGem.tab_id === 81 && routedGem.tab_url.includes("gemini.google.com"));
+  ok("prompt_routed emitted for deepseek with provider and tab_url",
+     routedDs && routedDs.provider === "deepseek" && routedDs.tab_id === 82 && routedDs.tab_url.includes("chat.deepseek.com"));
+
+  // Rate limit on Gemini while DeepSeek ran most recently must limit ONLY Gemini, not DeepSeek.
+  onRuntimeMessage({ type: "a2a_result", promptId: "p-gem", ok: false, error: "rate limit exceeded" }, {}, () => {});
+  await until(() => frames.some((f) => f.type === "prompt_result" && f.prompt_id === "p-gem"));
+  const gemResult = frames.find((f) => f.type === "prompt_result" && f.prompt_id === "p-gem");
+  ok("prompt_result carries provider, tab_id, and tab_url",
+     gemResult && gemResult.provider === "gemini" && gemResult.tab_id === 81 && gemResult.tab_url.includes("gemini.google.com"));
+  ok("parallel rate-limit attributes to gemini, not last-started deepseek",
+     api.isProviderLimited("gemini") === true && api.isProviderLimited("deepseek") === false);
+
+  // Transient ws.onclose preserves promptMeta so cancel_prompt reaches the DeepSeek tab.
+  StubWebSocket.instance.readyState = StubWebSocket.CLOSED;
+  StubWebSocket.instance.onclose({ code: 1006 });
+  tabSends.length = 0;
+  api.handleBridgeMessage({ type: "cancel_prompt", id: "p-ds" });
+  await until(() => tabSends.some((s) => s.msg.type === "zs-a2a-abort" && s.msg.promptId === "p-ds"));
+  const aborted = tabSends.find((s) => s.msg.type === "zs-a2a-abort" && s.msg.promptId === "p-ds");
+  ok("transient disconnect preserves promptMeta for cancel_prompt",
+     aborted && aborted.tabId === 82);
+
+  // Visibility-sensitive providers (DeepSeek, Gemini) must auto-activate hidden tabs
+  // before prompt dispatch; other background providers stay hidden.
+  StubWebSocket.instance.readyState = StubWebSocket.OPEN;
+  tabsForQuery = [
+    { id: 80, active: false, url: "https://chatgpt.com/c/1" },
+    { id: 81, active: false, url: "https://gemini.google.com/u/5/app/abc" },
+    { id: 82, active: false, url: "https://chat.deepseek.com/a/chat" },
+  ];
+  tabUpdates.length = 0;
+  await api.handleSubmitPrompt({ id: "p-vis-gpt", prompt: "c", metadata: { provider: "chatgpt" } });
+  const gptActivated = tabUpdates.some((u) => u.tabId === 80);
+  ok("background chatgpt tab is NOT force-activated on submit", !gptActivated, tabUpdates);
+
+  await api.handleSubmitPrompt({ id: "p-vis-gem", prompt: "g", metadata: { provider: "gemini" } });
+  const gemActivated = tabUpdates.some((u) => u.tabId === 81 && u.props && u.props.active === true);
+  ok("background gemini tab is activated before prompt dispatch", gemActivated, tabUpdates);
+
+  await api.handleSubmitPrompt({ id: "p-vis-ds", prompt: "d", metadata: { provider: "deepseek" } });
+  const dsActivated = tabUpdates.some((u) => u.tabId === 82 && u.props && u.props.active === true);
+  ok("background deepseek tab is activated before prompt dispatch", dsActivated, tabUpdates);
+
+  tabUpdates.length = 0;
+  onRuntimeMessage({ type: "zs-wake-tab" }, { tab: { id: 82 } }, () => {});
+  await until(() => tabUpdates.some((u) => u.tabId === 82 && u.props && u.props.active === true));
+  ok("zs-wake-tab message activates sender tab",
+     tabUpdates.some((u) => u.tabId === 82 && u.props && u.props.active === true));
 
   const failedCount = results.filter((r) => !r).length;
   console.log("\n" + (failedCount ? "FAIL" : "PASS") + "  " + (results.length - failedCount) + "/" + results.length + " checks passed");

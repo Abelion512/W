@@ -81,4 +81,80 @@ try {
   const oc = u.b.closest; u.b.closest = (s) => s === "input-area-v2 button" ? u.b : oc(s);
   ls.click({ target: u.b, isTrusted: false }); ls.click({ target: u.b, isTrusted: true });
   ok("Trusted manual Stop click triggers onNativeStop (synthetic ignored)", ns === 1);
+
+  // Live bug repro: Gemini keeps aria-busy="true" inside <message-content> after stop.
+  c = 0; u = mkIn("stop", () => c++);
+  setDOM([
+    u.box,
+    el("model-response", {}, [
+      el("message-content", {}, [
+        el("div", { class: "markdown markdown-main-panel", attrs: { "aria-busy": "true" } }, ["partial"])
+      ])
+    ])
+  ]);
+  ok("aria-busy inside message-content is ignored by isTaskModeWorking", !P.__test.isTaskModeWorking());
+  P.__test.resetStreamState(); P.__test.genActive(); now += 31000;
+  ok("aria-busy inside message-content does not block unwedgeStop past WEDGE_MS", !P.__test.genActive() && P.__test.unwedgeStop() && c === 1);
 } finally { Date.now = realNow; }
+
+(async () => {
+  const autoBox = el("input-area-v2", {}, [
+    el("div", { class: "ql-editor", attrs: { contenteditable: "true" } }),
+    el("button", { attrs: { "aria-label": "Open mode picker, currently Auto" } }, ["Auto"]),
+  ]);
+  setDOM([autoBox]);
+  const autoRes = await P.ensureComposerReady("startup");
+  ok("ensureComposerReady reports Auto honestly when Hydrogen picker is absent",
+    autoRes && autoRes.ready === true && autoRes.modeApplied === false && !/hydrogen/i.test(String(autoRes.model || "")));
+
+  const hydroBox = el("input-area-v2", {}, [
+    el("div", { class: "ql-editor", attrs: { contenteditable: "true" } }),
+    el("button", { attrs: { "aria-label": "Open mode picker" } }, ["4 Hydrogen · High"]),
+  ]);
+  setDOM([
+    hydroBox,
+    el("gem-menu-item", { class: "selected", attrs: { role: "menuitemradio" } }, ["4 Hydrogen"]),
+    el("gem-menu-item", { class: "selected", attrs: { role: "menuitemradio" } }, ["High"]),
+  ]);
+  const hydroRes = await P.ensureComposerReady("startup");
+  ok("ensureComposerReady reports modeApplied=true when 4 Hydrogen High is active",
+    hydroRes && hydroRes.ready === true && hydroRes.modeApplied === true && /hydrogen/i.test(String(hydroRes.model || "")));
+
+  let wakeCount = 0, sendClicks = 0, stopClicks = 0;
+  const stopBtn = el("button", { click: () => { stopClicks++; } }, [el("mat-icon", { attrs: { fonticon: "stop" } })]);
+  const sendBtn = el("button", { click: () => { sendClicks++; } }, [el("mat-icon", { attrs: { fonticon: "arrow_upward" } })]);
+  const wakeBox = el("input-area-v2", {}, [
+    el("div", { class: "ql-editor", attrs: { contenteditable: "true" } }, ["hello"]),
+    stopBtn,
+  ]);
+  setDOM([wakeBox]);
+  const prevHidden = global.document.hidden;
+  const prevChrome = global.chrome;
+  try {
+    global.document.hidden = true;
+    global.chrome = {
+      runtime: {
+        lastError: null,
+        sendMessage: (msg, cb) => {
+          if (msg && msg.type === "zs-wake-tab") {
+            wakeCount++;
+            global.document.hidden = false;
+            setDOM([el("input-area-v2", {}, [
+              el("div", { class: "ql-editor", attrs: { contenteditable: "true" } }, ["hello"]),
+              sendBtn,
+            ])]);
+          }
+          if (typeof cb === "function") cb();
+        },
+      },
+    };
+    await P.typeAndSend("hello");
+    ok("hidden typeAndSend wakes tab when stop button blocks send and avoids unwedge stop click",
+      wakeCount === 1 && sendClicks === 1 && stopClicks === 0);
+  } finally {
+    if (prevHidden === undefined) delete global.document.hidden;
+    else global.document.hidden = prevHidden;
+    if (prevChrome === undefined) delete global.chrome;
+    else global.chrome = prevChrome;
+  }
+})();

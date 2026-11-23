@@ -1163,6 +1163,36 @@ class AuditRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(1, server._pending)
         self.assertIn(2, server._pending)
 
+    async def test_oversized_response_preserves_trailing_jsonrpc_frame(self):
+        """Bytes after the first newline during overflow drain must still resolve the next response."""
+        server = bridge.MCPServer("mock", {"command": "x", "args": [], "env": {}})
+        lines = [
+            ValueError("Separator is not found, and chunk exceed the limit"),
+            b"",
+        ]
+
+        async def readline():
+            nxt = lines.pop(0)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+
+        async def read(_size):
+            return b'tail-ignored\n{"jsonrpc":"2.0","id":2,"result":{"ok":true}}\n'
+
+        server.process = SimpleNamespace(
+            stdout=SimpleNamespace(readline=readline, read=read), returncode=0
+        )
+        loop = asyncio.get_running_loop()
+        first, second = loop.create_future(), loop.create_future()
+        server._pending[1] = first
+        server._pending[2] = second
+        await server._read_stdout()
+        self.assertTrue(first.done())
+        self.assertIn("too large", str(first.exception()))
+        self.assertTrue(second.done())
+        self.assertEqual(second.result()["result"], {"ok": True})
+
     async def test_stdout_reader_ignores_non_object_json(self):
         """A JSON array/string line must not kill the stdout reader task."""
         server = bridge.MCPServer("mock", {"command": "x", "args": [], "env": {}})

@@ -257,6 +257,7 @@ snapgent-full/
 ├── docs/                      # Design, security/ops, and code standards
 ├── scripts/                   # One-off tooling
 ├── a2a_server.py              # A2A HTTP facade over bridge.submit_prompt
+├── activity_audit.py          # Structured JSONL activity audit log (logs/activity_audit.jsonl)
 ├── harness_loop.py            # Harness-owned A2A retry loop
 ├── context_sandbox.py         # Per-task context file sandbox
 ├── setup-config.py            # Configures the Linux workspace MCP server
