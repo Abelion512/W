@@ -1,0 +1,88 @@
+{
+  "generated_at": "2026-11-23T10:20:33+0700",
+  "bridge_pid": null,
+  "summary": {
+    "total": 13,
+    "pass": 13,
+    "fail": 0
+  },
+  "features": [
+    {
+      "feature": "SendMessage (blocking, live gemini)",
+      "status": "PASS",
+      "evidence": "{\"state\": \"TASK_STATE_COMPLETED\", \"artifact\": \"PONG\"}"
+    },
+    {
+      "feature": "tasks/get (poll + unknown id -32001)",
+      "status": "PASS",
+      "evidence": "{\"final\": \"TASK_STATE_COMPLETED\", \"unknown_code\": -32001}"
+    },
+    {
+      "feature": "metadata routing (provider/tier/category echoed)",
+      "status": "PASS",
+      "evidence": "{\"state\": \"TASK_STATE_COMPLETED\", \"metadata\": {\"provider\": \"gemini\", \"modelTier\": \"deep\", \"taskCategory\": \"review\"}}"
+    },
+    {
+      "feature": "tasks/orchestrate fan-out (gemini+deepseek)",
+      "status": "PASS",
+      "evidence": "{\"state\": \"TASK_STATE_COMPLETED\", \"providers\": [\"gemini\", \"deepseek\"], \"artifact\": \"PONG\"}"
+    },
+    {
+      "feature": "PII web-search guard (HARD STOP)",
+      "status": "PASS",
+      "evidence": "{\"state\": \"TASK_STATE_FAILED\", \"error\": \"HARD STOP: web search blocked - the prompt contains email address. Strip them or\"}"
+    },
+    {
+      "feature": "SSE SendStreamingMessage",
+      "status": "PASS",
+      "evidence": "{\"content_type\": \"text/event-stream\", \"events\": [\"task\", \"artifactUpdate\", \"artifactUpdate\", \"artifactUpdate\", \"artifactUpdate\", \"artifactUpdate\", \"artifactUpdate\", \"artifactUpdate\", \"artifactUpdate\", \"statusUpdate\"], \"final\": \"TASK_STATE_COMPLETED\"}"
+    },
+    {
+      "feature": "partial streaming artifactUpdate (append:true, lastChunk:false)",
+      "status": "PASS",
+      "evidence": "{\"partial_chunks\": 7, \"first_len\": 4}"
+    },
+    {
+      "feature": "progress elapsedSeconds on a live task",
+      "status": "PASS",
+      "evidence": "{\"first_elapsed\": 0, \"second\": {\"elapsedSeconds\": 2}}"
+    },
+    {
+      "feature": "tasks/cancel (live task -> CANCELED, late reply ignored)",
+      "status": "PASS",
+      "evidence": "{\"cancel_state\": \"TASK_STATE_CANCELED\", \"after\": \"TASK_STATE_CANCELED\"}"
+    },
+    {
+      "feature": "tasks/cancel rejects a terminal task (-32002)",
+      "status": "PASS",
+      "evidence": "{\"code\": -32002}"
+    },
+    {
+      "feature": "contextOnly tool gating per promptId",
+      "status": "PASS",
+      "evidence": "{\"gated_kind\": \"context_only\", \"ungated_kind\": null, \"task_state\": \"TASK_STATE_COMPLETED\"}"
+    },
+    {
+      "feature": "reconnect grace + prompt re-adoption",
+      "status": "PASS",
+      "evidence": "{\"task_state\": \"TASK_STATE_COMPLETED\", \"artifact\": \"recovered after reconnect\"}"
+    },
+    {
+      "feature": "rate limiter 429",
+      "status": "PASS",
+      "evidence": "{\"status_counts\": {\"200\": 72, \"429\": 58}}"
+    }
+  ],
+  "provider_audit": {
+    "gemini": "PARTIAL (see artifacts/hermes-gemini-audit.json)",
+    "deepseek": "FAIL (see artifacts/hermes-deepseek-audit.json)",
+    "cross_critique": "BLOCKED"
+  },
+  "live_provider_matrix": {
+    "command": "python3 e2e/a2a_matrix_live.py --only gemini,deepseek --rounds 2 --cdp 9222",
+    "verdict": "NOT STABLE",
+    "recorded_at": "2026-11-23T10:20:33+0700",
+    "note": "Provider tabs were degraded by earlier stuck generations from the audit attempts. The bridge also restarted at 10:05:51 mid-run, and both warm-2 requests returned HTTP 429. Gemini passed cold-1; DeepSeek passed cold-2.",
+    "log": "=== cold-1 round (cold) ===\nPASS  gemini   324.2s\nFAIL  deepseek 600.1s  err=timed out text=''\n\n=== warm-1 round (warm) ===\nFAIL  gemini   600.1s  err=timed out text=''\nFAIL  deepseek 371.7s  err=The web AI failed. text=''\n\n=== cold-2 round (cold) ===\nFAIL  gemini   600.1s  err=timed out text=''\nPASS  deepseek 54.7s\n\n=== warm-2 round (warm) ===\nFAIL  gemini   0.0s  err=HTTP Error 429: Too Many Requests text=''\nFAIL  deepseek 0.0s  err=HTTP Error 429: Too Many Requests text=''\n\n--- summary ---\nFAIL  gemini   cold-1:ok; warm-1:timed out; cold-2:timed out; warm-2:HTTP Error 429: Too Many Requests\nFAIL  deepseek cold-1:timed out; warm-1:The web AI failed.; cold-2:ok; warm-2:HTTP Error 429: Too Many Requests\nNOT STABLE"
+  }
+}

@@ -444,6 +444,20 @@ _PII_PATTERNS = {
 }
 
 
+# Fenced code blocks are quoted data, not the caller's own request. A long
+# review prompt that pastes source would otherwise trip the intent regex on the
+# code's own comments: measured live, a pasted `web_search_pii_violations`
+# literal blocked an audit prompt that asked for no web search at all. Intent is
+# therefore read from the prose only; the PII scan still covers the whole prompt
+# so a fenced email beside a real "search the web" request is still blocked.
+_FENCED_CODE_BLOCK = re.compile(r"```.*?```", re.DOTALL)
+
+
+def _prose(text: str) -> str:
+    """Return `text` with fenced code blocks removed."""
+    return _FENCED_CODE_BLOCK.sub(" ", text)
+
+
 def web_search_pii_violations(prompt: str, metadata: Optional[Dict[str, Any]] = None) -> List[str]:
     """Return PII categories present when a prompt asks for a web search.
 
@@ -454,7 +468,7 @@ def web_search_pii_violations(prompt: str, metadata: Optional[Dict[str, Any]] = 
         return []
     meta = metadata or {}
     forced = bool(meta.get("webSearch") or meta.get("needsWeb") or meta.get("needs_web"))
-    if not forced and not _WEB_SEARCH_INTENT.search(prompt):
+    if not forced and not _WEB_SEARCH_INTENT.search(_prose(prompt)):
         return []
     return [name for name, pattern in _PII_PATTERNS.items() if pattern.search(prompt)]
 

@@ -26,6 +26,32 @@ class WebSearchPiiGuardTests(unittest.TestCase):
             [],
         )
 
+    def test_fenced_code_is_not_read_as_search_intent(self):
+        # A pasted source file mentions "web search" and a private path in its
+        # own comments; the caller asked for a review, not a search.
+        prompt = (
+            "Review this snippet for failure modes.\n"
+            "```python\n"
+            "# web search guard: /home/alice/secret\n"
+            "print('web search')\n"
+            "```\n"
+        )
+        self.assertEqual(bridge.web_search_pii_violations(prompt), [])
+
+    def test_prose_search_with_fenced_pii_still_blocks(self):
+        prompt = "Search the web for this contact:\n```\njane.doe@example.com\n```"
+        self.assertIn(
+            "email address",
+            bridge.web_search_pii_violations(prompt),
+        )
+
+    def test_prose_search_with_fenced_private_path_blocks(self):
+        prompt = "web search this path:\n```\n/home/alice/.ssh/id_ed25519\n```"
+        self.assertIn(
+            "private file path",
+            bridge.web_search_pii_violations(prompt),
+        )
+
     def test_metadata_flag_forces_guard(self):
         violations = bridge.web_search_pii_violations(
             "Look up this account: sk-abcdefghijklmnopqrst", {"webSearch": True}
