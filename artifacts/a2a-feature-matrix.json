@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-23T09:30:31+0700",
+  "generated_at": "2026-11-23T10:20:33+0700",
   "bridge_pid": null,
   "summary": {
     "total": 13,
@@ -77,5 +77,12 @@
     "gemini": "PARTIAL (see artifacts/hermes-gemini-audit.json)",
     "deepseek": "FAIL (see artifacts/hermes-deepseek-audit.json)",
     "cross_critique": "BLOCKED"
+  },
+  "live_provider_matrix": {
+    "command": "python3 e2e/a2a_matrix_live.py --only gemini,deepseek --rounds 2 --cdp 9222",
+    "verdict": "NOT STABLE",
+    "recorded_at": "2026-11-23T10:20:33+0700",
+    "note": "Provider tabs were degraded by earlier stuck generations from the audit attempts. The bridge also restarted at 10:05:51 mid-run, and both warm-2 requests returned HTTP 429. Gemini passed cold-1; DeepSeek passed cold-2.",
+    "log": "=== cold-1 round (cold) ===\nPASS  gemini   324.2s\nFAIL  deepseek 600.1s  err=timed out text=''\n\n=== warm-1 round (warm) ===\nFAIL  gemini   600.1s  err=timed out text=''\nFAIL  deepseek 371.7s  err=The web AI failed. text=''\n\n=== cold-2 round (cold) ===\nFAIL  gemini   600.1s  err=timed out text=''\nPASS  deepseek 54.7s\n\n=== warm-2 round (warm) ===\nFAIL  gemini   0.0s  err=HTTP Error 429: Too Many Requests text=''\nFAIL  deepseek 0.0s  err=HTTP Error 429: Too Many Requests text=''\n\n--- summary ---\nFAIL  gemini   cold-1:ok; warm-1:timed out; cold-2:timed out; warm-2:HTTP Error 429: Too Many Requests\nFAIL  deepseek cold-1:timed out; warm-1:The web AI failed.; cold-2:ok; warm-2:HTTP Error 429: Too Many Requests\nNOT STABLE"
   }
 }
