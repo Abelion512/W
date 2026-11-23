@@ -152,8 +152,11 @@ def check_metadata_routing():
 
 
 def check_rate_limiter():
+    # Keep in sync with a2a_server.MAX_REQUESTS_PER_MINUTE (120): the burst must
+    # exceed it, and the assertion is that the surplus is rejected with 429.
+    burst = 130
     codes = {}
-    for _ in range(130):
+    for _ in range(burst):
         status, _ = http("GetTask", {"id": "nope"}, timeout=10.0)
         codes[status] = codes.get(status, 0) + 1
     ok = codes.get(429, 0) > 0
