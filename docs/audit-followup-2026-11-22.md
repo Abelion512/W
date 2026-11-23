@@ -11,7 +11,7 @@ python3 -m pytest -q                       -> 180 passed in 23.24s
 python3 e2e/e2e_live.py                    -> 26/26 PASS
 python3 -m pyflakes *.py tests/*.py e2e/*.py scripts/*.py -> clean
 node --check  (extension + app JS)         -> NODE SYNTAX OK
-node snapgent-extension/test-*.js          -> NODE TESTS OK
+node snapgent-extension/tests/test-*.js          -> NODE TESTS OK
 bash -n Linux_Start.sh switch-project.sh sync-upstream.sh scripts/*.sh -> BASH_SYNTAX_OK
 ```
 

@@ -93,7 +93,7 @@ Rules:
 | --- | --- | --- |
 | Python unit | CI `tests` job | `/usr/bin/python3 -m pytest -q` |
 | Python static (unused imports/names) | CI `tests` job | `python -m pyflakes workspace_mcp.py bridge.py bridge_auth.py setup-config.py tests/*.py e2e/*.py` |
-| JS syntax + stub-DOM | CI `tests` job | `node --check` per file in review; `node snapgent-extension/test-*.js` |
+| JS syntax + stub-DOM | CI `tests` job | `node --check` per file in review; `node snapgent-extension/tests/test-*.js` |
 | Live e2e | CI `e2e` job | `python e2e/e2e_live.py` |
 | Pairing/rotation handshake | Manual (needs Chrome) | `python e2e/smoke_extension_live.py` |
 | Per-provider A2A matrix | Manual (needs browser + logins) | `python e2e/a2a_matrix_live.py` |

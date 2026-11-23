@@ -14,7 +14,7 @@ All notable changes to snapgentV3 Free are documented here.
   `/c/<id>` counts as "has messages" even before its turns mount, so the opening
   prompt no longer lands in a thread that re-renders under it. A cold reply got a
   150s warmup window (measured ~100-120s) instead of 60s. Added
-  `snapgent-extension/test-grok-editor.js` to CI.
+  `snapgent-extension/tests/test-grok-editor.js` to CI.
 - **A refused session now reports the site's own reason.** startSession's failure
   text (e.g. Grok's "Free tier limit reached", read from its
   `usage-limit-notice`) is carried into the A2A error, so a quota block is
@@ -165,7 +165,7 @@ All notable changes to snapgentV3 Free are documented here.
   that state in `chrome.storage.local` so the popup keeps showing the pairing
   card across a service-worker eviction, and dials again only when the popup
   saves a token. Measured live: 0 connections/min, down from 40-71. Covered by
-  `snapgent-extension/test-reconnect.js`.
+  `snapgent-extension/tests/test-reconnect.js`.
 - **ChatGPT: the snapgentV3 bar no longer covers the page's "Scroll to bottom"
   button.** ChatGPT replaced the composer-surface grid with a flex-column
   `ComposerLayoutRoot`, so `barMount()` found no container and the bar fell back

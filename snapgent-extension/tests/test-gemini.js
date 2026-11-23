@@ -45,7 +45,7 @@ global.document = { querySelector: (s) => doc.querySelector(s), querySelectorAll
 global.window = { location: { pathname: "/app/t" }, getSelection: () => ({}) };
 global.location = global.window.location;
 global.getComputedStyle = () => ({});
-const P = new Function(fs.readFileSync(__dirname + "/providers/base.js", "utf8") + "\n" + fs.readFileSync(__dirname + "/providers/gemini.js", "utf8") + "; return ZSProvider;")(); // NOSONAR test only: own local provider files read from disk, no external input
+const P = new Function(fs.readFileSync(__dirname + "/../providers/base.js", "utf8") + "\n" + fs.readFileSync(__dirname + "/../providers/gemini.js", "utf8") + "; return ZSProvider;")(); // NOSONAR test only: own local provider files read from disk, no external input
 const ok = (m, c) => { console.log((c ? "PASS" : "FAIL") + "  " + m); if (!c) process.exitCode = 1; };
 const mkIn = (ic, fn) => { const b = el("button", { click: fn }, [el("mat-icon", { attrs: { fonticon: ic } })]); return { box: el("input-area-v2", {}, [el("div", { class: "ql-editor", attrs: { contenteditable: "true" } }), b]), b }; };
 ok("WEDGE_MS === 30000", P.__test.WEDGE_MS === 30000);

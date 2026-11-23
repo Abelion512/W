@@ -48,7 +48,7 @@ Fixes #
 |---|---|
 | `python -m pytest -q` | |
 | `python -m pyflakes ...` | |
-| `node snapgent-extension/test-*.js` | |
+| `node snapgent-extension/tests/test-*.js` | |
 | live check | |
 
 ## Trade-off

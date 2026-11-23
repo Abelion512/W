@@ -51,7 +51,7 @@ tests:
       - any-glob-to-any-file:
           - tests/**
           - e2e/**
-          - snapgent-extension/test-*.js
+          - snapgent-extension/tests/test-*.js
 
 model-catalog:
   - changed-files:

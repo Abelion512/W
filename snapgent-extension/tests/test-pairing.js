@@ -1,6 +1,6 @@
 // Quick Node smoke test for core/pairing.js (run: node test-pairing.js). Not shipped.
 const fs = require("fs");
-const ZSPairing = new Function(fs.readFileSync(__dirname + "/core/pairing.js", "utf8") + "; return ZSPairing;")();
+const ZSPairing = new Function(fs.readFileSync(__dirname + "/../core/pairing.js", "utf8") + "; return ZSPairing;")();
 
 const ok = (name, cond) => { console.log((cond ? "PASS" : "FAIL") + "  " + name); if (!cond) process.exitCode = 1; };
 

@@ -319,7 +319,7 @@ how to diagnose a running bridge (including opt-in JSON logging with
 are in [`docs/code-standards.md`](docs/code-standards.md).
 
 Tests: `/usr/bin/python3 -m pytest -q` (Python), `node
-snapgent-extension/test-*.js` (extension stub-DOM), and
+snapgent-extension/tests/test-*.js` (extension stub-DOM), and
 `/usr/bin/python3 e2e/e2e_live.py` (live bridge + subprocess).
 GitHub Actions runs the same suites on every push/PR. The pairing and rotation
 handshake needs a real browser, so it has its own manual smoke:

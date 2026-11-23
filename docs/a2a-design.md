@@ -228,11 +228,11 @@ return P.itemText(P.lastAssistant()) || "";
   events.
 - `test_bridge.py`: `submit_prompt` round-trip resolves on a `prompt_result` for
   the matching id; no extension fails fast; disconnect fails pending prompts.
-- `snapgent-extension/test-a2a.js`: `background.js` relays `submit_prompt` to the
+- `snapgent-extension/tests/test-a2a.js`: `background.js` relays `submit_prompt` to the
   chosen tab and relays `a2a_result` back to the bridge (stubbed `chrome` and
   `WebSocket`, no npm).
 
-Run: `python3 -m unittest discover -s tests` and `node snapgent-extension/test-a2a.js`.
+Run: `python3 -m unittest discover -s tests` and `node snapgent-extension/tests/test-a2a.js`.
 
 ## Risks
 

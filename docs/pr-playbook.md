@@ -82,7 +82,7 @@ Run the same commands locally before pushing:
 ```bash
 python -m pyflakes workspace_mcp.py bridge.py bridge_auth.py setup-config.py tests/*.py e2e/*.py
 python -m pytest -q
-for f in snapgent-extension/test-*.js; do node "$f"; done
+for f in snapgent-extension/tests/test-*.js; do node "$f"; done
 ```
 
 A red check is never fixed by skipping it, loosening an assertion, or adding a

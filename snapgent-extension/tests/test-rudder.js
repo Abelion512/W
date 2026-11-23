@@ -317,7 +317,7 @@ sendButton._click = () => {
 };
 
 const P = new Function(
-  fs.readFileSync(__dirname + "/providers/base.js", "utf8") + "\n" + fs.readFileSync(__dirname + "/providers/rudder.js", "utf8") + "; return ZSProvider;"
+  fs.readFileSync(__dirname + "/../providers/base.js", "utf8") + "\n" + fs.readFileSync(__dirname + "/../providers/rudder.js", "utf8") + "; return ZSProvider;"
 )();
 
 const results = [];
@@ -411,7 +411,7 @@ function ok(name, condition, detail = "") {
 
   // Compact prompt must actually fit Rudder's cap.
   const ZS = new Function(
-    fs.readFileSync(__dirname + "/core/config.js", "utf8") + "; return ZS;"
+    fs.readFileSync(__dirname + "/../core/config.js", "utf8") + "; return ZS;"
   )();
   const compact = ZS.buildSystemPrompt({
     siteName: "Rudder", targetServer: "roblox", targetName: "Roblox Studio", compact: true,

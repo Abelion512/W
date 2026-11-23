@@ -225,7 +225,7 @@ the safety net for the case where even the cancel message cannot arrive
 - `tests/test_a2a_server.py`: metadata is accepted, unknown category is defaulted,
   and the task echoes the resolved tier.
 - `tests/test_bridge.py`: `submit_prompt` carries metadata through unchanged.
-- `snapgent-extension/test-a2a.js`: category, tier, complexity downgrade, the
+- `snapgent-extension/tests/test-a2a.js`: category, tier, complexity downgrade, the
   `realtime` category override and an explicit provider pin each pick the
   expected tab, and a missing preferred tab falls back cleanly.
 - `tests/test_bridge.py`: a prompt that times out sends exactly one
