@@ -90,11 +90,11 @@ const chrome = {
 // literal, and no part of it is user input.
 const importScripts = (relpath) => {
   globalThis.ZSPairing = new Function(
-    fs.readFileSync(__dirname + "/" + relpath, "utf8") + "; return ZSPairing;"
+    fs.readFileSync(__dirname + "/../" + relpath, "utf8") + "; return ZSPairing;"
   )();
 };
 
-const src = fs.readFileSync(__dirname + "/background.js", "utf8");
+const src = fs.readFileSync(__dirname + "/../background.js", "utf8");
 const api = new Function("chrome", "WebSocket", "importScripts",
   src + "; return { handleBridgeMessage, handleSubmitPrompt, routeFor, tabForRoute, TIER_PROVIDERS, CATEGORY_PROVIDERS, PROVIDER_HOSTS, PROVIDER_CAPABILITIES };"
 )(chrome, StubWebSocket, importScripts);

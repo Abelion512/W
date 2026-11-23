@@ -81,7 +81,7 @@ global.document = {
 global.location = { pathname: "/" };
 
 const provider = new Function(
-  fs.readFileSync(__dirname + "/providers/base.js", "utf8") + "\n" + fs.readFileSync(__dirname + "/providers/meta.js", "utf8") + "; return ZSProvider;"
+  fs.readFileSync(__dirname + "/../providers/base.js", "utf8") + "\n" + fs.readFileSync(__dirname + "/../providers/meta.js", "utf8") + "; return ZSProvider;"
 )();
 
 (async () => {

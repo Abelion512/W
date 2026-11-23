@@ -52,7 +52,7 @@ Active surfaces audited: `bridge.py`, `bridge_auth.py`, `workspace_mcp.py`,
 ### Phase 1 Verification
 
 - `grep -n innerHTML snapgent-extension/core/main.js snapgent-extension/core/ui-controller.js` -> comments only (0 active sinks).
-- `node --check` on all extension JS + `node snapgent-extension/test-*.js` -> all 12 suites PASS.
+- `node --check` on all extension JS + `node snapgent-extension/tests/test-*.js` -> all 12 suites PASS.
 - `python3 -m unittest -v tests/test_a2a_server.py tests/test_manifest_and_sandbox.py tests/test_context_sandbox.py` -> 44/44 OK.
 - `python3 -m py_compile *.py tests/*.py e2e/*.py scripts/*.py` -> OK.
 - `python3 scripts/version-sync.py --check` -> OK (`3.10.0`).

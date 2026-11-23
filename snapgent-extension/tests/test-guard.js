@@ -10,7 +10,7 @@ const ok = (name, cond) => {
 };
 
 const G = new Function( // NOSONAR test only: own local guard.js read from disk, no external input
-  fs.readFileSync(__dirname + "/core/guard.js", "utf8") + "; return ZSGuard;"
+  fs.readFileSync(__dirname + "/../core/guard.js", "utf8") + "; return ZSGuard;"
 )();
 
 (async () => {
@@ -147,7 +147,7 @@ const G = new Function( // NOSONAR test only: own local guard.js read from disk,
 // core/guard.js via importScripts and consult ZSGuard.heartbeatDecision.
 {
   const fs = require("fs");
-  const bg = fs.readFileSync(__dirname + "/background.js", "utf8");
+  const bg = fs.readFileSync(__dirname + "/../background.js", "utf8");
   ok("background.js imports the shared guard", /importScripts\(\s*["']core\/guard\.js["']\s*\)/.test(bg));
   ok("background.js calls ZSGuard.heartbeatDecision", /ZSGuard\.heartbeatDecision\s*\(/.test(bg));
   // The inline elapsed-time gate must be gone, or the worker keeps its own copy.

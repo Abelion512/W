@@ -80,11 +80,11 @@ const chrome = {
 // this file - never user input.
 const importScripts = (relpath) => {
   globalThis.ZSPairing = new Function(
-    fs.readFileSync(__dirname + "/" + relpath, "utf8") + "; return ZSPairing;"
+    fs.readFileSync(__dirname + "/../" + relpath, "utf8") + "; return ZSPairing;"
   )();
 };
 
-const src = fs.readFileSync(__dirname + "/background.js", "utf8");
+const src = fs.readFileSync(__dirname + "/../background.js", "utf8");
 new Function("chrome", "WebSocket", "importScripts", src)(chrome, StubWebSocket, importScripts);
 
 const ok = (name, cond) => {

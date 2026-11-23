@@ -15,7 +15,7 @@
 // keeps it that way.
 const fs = require("fs");
 const ZSParse = new Function(
-  fs.readFileSync(__dirname + "/core/parser.js", "utf8") + "; return ZSParse;"
+  fs.readFileSync(__dirname + "/../core/parser.js", "utf8") + "; return ZSParse;"
 )();
 
 // ── Stub DOM ────────────────────────────────────────────────────────────────
@@ -145,7 +145,7 @@ global.CustomEvent = class { constructor(t) { this.type = t; } };
 global.MutationObserver = class { observe() {} disconnect() {} };
 global.getComputedStyle = () => ({});
 const P = new Function(
-  fs.readFileSync(__dirname + "/providers/base.js", "utf8") + "\n" + fs.readFileSync(__dirname + "/providers/chatgpt.js", "utf8") + "; return ZSProvider;"
+  fs.readFileSync(__dirname + "/../providers/base.js", "utf8") + "\n" + fs.readFileSync(__dirname + "/../providers/chatgpt.js", "utf8") + "; return ZSProvider;"
 )();
 
 const ok = (name, cond) => { console.log((cond ? "PASS" : "FAIL") + "  " + name); if (!cond) process.exitCode = 1; };

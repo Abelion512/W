@@ -170,7 +170,7 @@ text format.
 | Suite | Command | What it proves |
 | --- | --- | --- |
 | Python unit | `/usr/bin/python3 -m pytest -q` | workspace tools, symlink guard, `run_command` policy, bridge stdio, backoff, status |
-| Extension (Node) | `node snapgent-extension/test-parser.js` etc. | parser + provider DOM reading against a stub DOM, no npm install |
+| Extension (Node) | `node snapgent-extension/tests/test-parser.js` etc. | parser + provider DOM reading against a stub DOM, no npm install |
 | Live e2e | `/usr/bin/python3 e2e/e2e_live.py` | real bridge + real subprocess on an ephemeral port: tools, symlink, policy, write/edit/delete, kill → inline restart, kill → monitor restart |
 
 GitHub Actions (`.github/workflows/tests.yml`) runs the Python and Node

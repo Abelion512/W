@@ -23,7 +23,7 @@ global.chrome = {
 };
 global.setInterval = () => 0; // popup schedules a 2s refresh; ignore in test
 
-const popupSrc = fs.readFileSync(__dirname + "/popup.js", "utf8");
+const popupSrc = fs.readFileSync(__dirname + "/../popup.js", "utf8");
 // popup.js has no exports; evaluate it and capture render() from closure scope.
 // Safe here: the evaluated string is this repo's own popup.js read from disk
 // (same pattern as test-parser.js/test-chatgpt.js), never user input.

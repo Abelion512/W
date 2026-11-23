@@ -8,7 +8,7 @@ const path = require("path");
 const vm = require("vm");
 
 function loadCoreGlobal(filename, globalName, extraSandbox) {
-  const full = path.join(__dirname, "core", filename);
+  const full = path.join(__dirname, "..", "core", filename);
   const code = fs.readFileSync(full, "utf8") + `\n;globalThis.${globalName} = ${globalName};`;
   const sandbox = Object.assign({ console, setTimeout, clearTimeout, setInterval, clearInterval, Date }, extraSandbox || {});
   sandbox.globalThis = sandbox;
@@ -397,7 +397,7 @@ function check(name, cond, detail) {
   const unlockedOk = !mockClassSet.has("zs-typing") && !mockClassSet.has("zs-height-locked") && !("--zs-lock-h" in mockStyles);
   check("inputCover locks and unlocks editor height around Agent is working cover", lockedOk && unlockedOk, { lockedOk, unlockedOk, mockStyles });
 
-  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "manifest.json"), "utf8"));
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
   const required = ["core/channel.js", "core/dom-engine.js", "core/a2a-runner.js", "core/ui-controller.js"];
   const mainEntries = manifest.content_scripts.filter((cs) => (cs.js || []).includes("core/main.js"));
   const allLoadedBeforeMain = mainEntries.length > 0 && mainEntries.every((cs) => {

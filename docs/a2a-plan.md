@@ -225,7 +225,7 @@ Commit: `feat: add submit_prompt plumbing to the bridge`
 
 ## Task 3: Extension relay (`background.js`) + node test
 
-Files: `snapgent-extension/background.js`, `snapgent-extension/test-a2a.js`.
+Files: `snapgent-extension/background.js`, `snapgent-extension/tests/test-a2a.js`.
 
 `background.js`:
 
@@ -299,7 +299,7 @@ async function handleSubmitPrompt(msg) {
   on the socket.
 - Print a PASS/FAIL summary; exit non-zero on failure.
 
-Verification: `node snapgent-extension/test-a2a.js`.
+Verification: `node snapgent-extension/tests/test-a2a.js`.
 
 Commit: `feat: relay A2A prompts through the extension background`
 
@@ -353,8 +353,8 @@ for this branch. `agentLoop` already no-ops when `A.running`.
 Verification: `node -e "new Function(require('fs').readFileSync('snapgent-extension/core/main.js','utf8'))"`
 parses the file (syntax check), and
 `python3 -m unittest` stays green. Also run the existing node tests:
-`node snapgent-extension/test-parser.js` and
-`node snapgent-extension/test-chatgpt.js`.
+`node snapgent-extension/tests/test-parser.js` and
+`node snapgent-extension/tests/test-chatgpt.js`.
 
 Commit: `feat: add A2A prompt handler to the content script`
 
@@ -396,5 +396,5 @@ Files: none.
 2. Confirm: only stdlib imports added; `127.0.0.1` binding; token enforced on
    POST; three methods plus aliases; no `kind` field in emitted A2A objects;
    `TASK_STATE_*` values only; no new dependency.
-3. `python3 -m unittest` green; `node snapgent-extension/test-a2a.js` passes.
+3. `python3 -m unittest` green; `node snapgent-extension/tests/test-a2a.js` passes.
 4. Report findings; fix in one dispatch if any.

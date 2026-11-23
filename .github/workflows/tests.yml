@@ -3,7 +3,7 @@ name: tests
 # Runs the repo's existing zero-dependency suites: Python unit tests plus
 # the Node stub-DOM smoke tests for the extension. Deliberately NOT
 # Playwright/Puppeteer: the extension tests stub the DOM in plain Node
-# (see snapgent-extension/test-chatgpt.js) and the repo ships no npm
+# (see snapgent-extension/tests/test-chatgpt.js) and the repo ships no npm
 # dependencies for the extension, so a browser download would be the
 # heaviest part of the suite for the least coverage gain.
 #
@@ -69,19 +69,19 @@ jobs:
                       snapgent-extension/core/*.js; do
             node --check "$file"
           done
-          node snapgent-extension/test-parser.js
-          node snapgent-extension/test-chatgpt.js
-          node snapgent-extension/test-meta.js
-          node snapgent-extension/test-popup-status.js
-          node snapgent-extension/test-pairing.js
-          node snapgent-extension/test-reconnect.js
-          node snapgent-extension/test-rudder.js
-          node snapgent-extension/test-grok-editor.js
-          node snapgent-extension/test-a2a.js
-          node snapgent-extension/test-background.js
-          node snapgent-extension/test-core-modules.js
-          node snapgent-extension/test-gemini.js
-          node snapgent-extension/test-guard.js
+          node snapgent-extension/tests/test-parser.js
+          node snapgent-extension/tests/test-chatgpt.js
+          node snapgent-extension/tests/test-meta.js
+          node snapgent-extension/tests/test-popup-status.js
+          node snapgent-extension/tests/test-pairing.js
+          node snapgent-extension/tests/test-reconnect.js
+          node snapgent-extension/tests/test-rudder.js
+          node snapgent-extension/tests/test-grok-editor.js
+          node snapgent-extension/tests/test-a2a.js
+          node snapgent-extension/tests/test-background.js
+          node snapgent-extension/tests/test-core-modules.js
+          node snapgent-extension/tests/test-gemini.js
+          node snapgent-extension/tests/test-guard.js
 
   e2e:
     runs-on: ubuntu-latest
