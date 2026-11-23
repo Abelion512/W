@@ -1,24 +1,81 @@
 {
-  "generated_at": "2026-11-23T09:10:00+07:00",
-  "prompt_bytes": 330,
-  "providers": {
-    "gemini": {
-      "status": "PARTIAL",
-      "model": "Gemini 4 Hydrogen (thinking High)",
-      "raw_artifact": "artifacts/hermes-gemini-audit.json",
-      "finding": "5 failure modes with file:line evidence (PII guard false positive, 128MB MCP stdout framing, tasks/cancel zombie, SSE no partial/keepalive, single-socket ownership).",
-      "error": "Round 1 reply captured from DOM after the A2A task stopped returning; round 2 returned only an interim status line."
+  "generated_at": "2026-11-23T09:30:31+0700",
+  "bridge_pid": null,
+  "summary": {
+    "total": 13,
+    "pass": 13,
+    "fail": 0
+  },
+  "features": [
+    {
+      "feature": "SendMessage (blocking, live gemini)",
+      "status": "PASS",
+      "evidence": "{\"state\": \"TASK_STATE_COMPLETED\", \"artifact\": \"PONG\"}"
     },
-    "deepseek": {
-      "status": "FAIL",
-      "model": "DeepSeek (DeepThink + Search ON)",
-      "raw_artifact": "artifacts/hermes-deepseek-audit.json",
-      "error": "Round 2: 'Could not start a Snapgent session in this chat. reply was never read (0 chars) - message DOM not matched.' Round 3 (fresh tab): prompt never delivered, job killed after 3 min."
+    {
+      "feature": "tasks/get (poll + unknown id -32001)",
+      "status": "PASS",
+      "evidence": "{\"final\": \"TASK_STATE_COMPLETED\", \"unknown_code\": -32001}"
+    },
+    {
+      "feature": "metadata routing (provider/tier/category echoed)",
+      "status": "PASS",
+      "evidence": "{\"state\": \"TASK_STATE_COMPLETED\", \"metadata\": {\"provider\": \"gemini\", \"modelTier\": \"deep\", \"taskCategory\": \"review\"}}"
+    },
+    {
+      "feature": "tasks/orchestrate fan-out (gemini+deepseek)",
+      "status": "PASS",
+      "evidence": "{\"state\": \"TASK_STATE_COMPLETED\", \"providers\": [\"gemini\", \"deepseek\"], \"artifact\": \"PONG\"}"
+    },
+    {
+      "feature": "PII web-search guard (HARD STOP)",
+      "status": "PASS",
+      "evidence": "{\"state\": \"TASK_STATE_FAILED\", \"error\": \"HARD STOP: web search blocked - the prompt contains email address. Strip them or\"}"
+    },
+    {
+      "feature": "SSE SendStreamingMessage",
+      "status": "PASS",
+      "evidence": "{\"content_type\": \"text/event-stream\", \"events\": [\"task\", \"artifactUpdate\", \"artifactUpdate\", \"artifactUpdate\", \"artifactUpdate\", \"artifactUpdate\", \"artifactUpdate\", \"artifactUpdate\", \"artifactUpdate\", \"statusUpdate\"], \"final\": \"TASK_STATE_COMPLETED\"}"
+    },
+    {
+      "feature": "partial streaming artifactUpdate (append:true, lastChunk:false)",
+      "status": "PASS",
+      "evidence": "{\"partial_chunks\": 7, \"first_len\": 4}"
+    },
+    {
+      "feature": "progress elapsedSeconds on a live task",
+      "status": "PASS",
+      "evidence": "{\"first_elapsed\": 0, \"second\": {\"elapsedSeconds\": 2}}"
+    },
+    {
+      "feature": "tasks/cancel (live task -> CANCELED, late reply ignored)",
+      "status": "PASS",
+      "evidence": "{\"cancel_state\": \"TASK_STATE_CANCELED\", \"after\": \"TASK_STATE_CANCELED\"}"
+    },
+    {
+      "feature": "tasks/cancel rejects a terminal task (-32002)",
+      "status": "PASS",
+      "evidence": "{\"code\": -32002}"
+    },
+    {
+      "feature": "contextOnly tool gating per promptId",
+      "status": "PASS",
+      "evidence": "{\"gated_kind\": \"context_only\", \"ungated_kind\": null, \"task_state\": \"TASK_STATE_COMPLETED\"}"
+    },
+    {
+      "feature": "reconnect grace + prompt re-adoption",
+      "status": "PASS",
+      "evidence": "{\"task_state\": \"TASK_STATE_COMPLETED\", \"artifact\": \"recovered after reconnect\"}"
+    },
+    {
+      "feature": "rate limiter 429",
+      "status": "PASS",
+      "evidence": "{\"status_counts\": {\"200\": 72, \"429\": 58}}"
     }
-  },
-  "cross_critique": {
-    "status": "BLOCKED",
-    "reason": "DeepSeek produced no findings, so neither critique round could run."
-  },
-  "environment_fix": "config.json MCP repo root repaired from /media/abelion/Isaf/ican/project/webmcp-agent (missing) to /media/abelion/Isaf/ican/project/webmcp; snapgent-bridge.service restarted."
+  ],
+  "provider_audit": {
+    "gemini": "PARTIAL (see artifacts/hermes-gemini-audit.json)",
+    "deepseek": "FAIL (see artifacts/hermes-deepseek-audit.json)",
+    "cross_critique": "BLOCKED"
+  }
 }
