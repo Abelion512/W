@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-11-23T09:10:00+07:00",
+  "prompt_bytes": 330,
+  "providers": {
+    "gemini": {
+      "status": "PARTIAL",
+      "model": "Gemini 4 Hydrogen (thinking High)",
+      "raw_artifact": "artifacts/hermes-gemini-audit.json",
+      "finding": "5 failure modes with file:line evidence (PII guard false positive, 128MB MCP stdout framing, tasks/cancel zombie, SSE no partial/keepalive, single-socket ownership).",
+      "error": "Round 1 reply captured from DOM after the A2A task stopped returning; round 2 returned only an interim status line."
+    },
+    "deepseek": {
+      "status": "FAIL",
+      "model": "DeepSeek (DeepThink + Search ON)",
+      "raw_artifact": "artifacts/hermes-deepseek-audit.json",
+      "error": "Round 2: 'Could not start a Snapgent session in this chat. reply was never read (0 chars) - message DOM not matched.' Round 3 (fresh tab): prompt never delivered, job killed after 3 min."
+    }
+  },
+  "cross_critique": {
+    "status": "BLOCKED",
+    "reason": "DeepSeek produced no findings, so neither critique round could run."
+  },
+  "environment_fix": "config.json MCP repo root repaired from /media/abelion/Isaf/ican/project/webmcp-agent (missing) to /media/abelion/Isaf/ican/project/webmcp; snapgent-bridge.service restarted."
+}
