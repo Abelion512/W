@@ -342,8 +342,9 @@ function check(name, cond, detail) {
     return node;
   };
   const docEl = mkEl("html");
+  const uiListeners = { window: {}, document: {} };
   const uiSandbox = {
-    window: { addEventListener: () => {}, innerWidth: 1280, innerHeight: 800 },
+    window: { addEventListener: (t, f) => { uiListeners.window[t] = f; }, innerWidth: 1280, innerHeight: 800 },
     performance: { now: () => 1000 },
     document: {
       documentElement: docEl,
@@ -351,7 +352,8 @@ function check(name, cond, detail) {
       createElement: (tag) => mkEl(tag),
       createElementNS: (_ns, tag) => mkEl(tag),
       getElementById: () => null,
-      addEventListener: () => {},
+      addEventListener: (t, f) => { uiListeners.document[t] = f; },
+      hidden: false,
     },
     getComputedStyle: () => ({ backgroundColor: "rgb(20, 20, 20)", borderRadius: "12px" }),
     requestAnimationFrame: () => 1,
@@ -396,6 +398,11 @@ function check(name, cond, detail) {
   uiCtrl.inputCover(false);
   const unlockedOk = !mockClassSet.has("zs-typing") && !mockClassSet.has("zs-height-locked") && !("--zs-lock-h" in mockStyles);
   check("inputCover locks and unlocks editor height around Agent is working cover", lockedOk && unlockedOk, { lockedOk, unlockedOk, mockStyles });
+
+  const resize = uiListeners.window.resize, onVisible = uiListeners.document.visibilitychange;
+  const listenersOk = typeof resize === "function" && typeof onVisible === "function";
+  if (listenersOk) { uiSandbox.document.hidden = false; resize(); onVisible(); }
+  check("hidden-tab resize/visibility re-place bar and cover", listenersOk, { resize: !!resize, onVisible: !!onVisible });
 
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
   const required = ["core/channel.js", "core/dom-engine.js", "core/a2a-runner.js", "core/ui-controller.js"];
