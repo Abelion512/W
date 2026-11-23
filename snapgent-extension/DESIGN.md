@@ -7,12 +7,36 @@ A quiet control rail fused to the host site's composer — one band that says
 site gets its own colour, border, radius, and font tokens so the overlay blends
 into the page rather than sitting on top as a foreign widget.
 
+## Base design: Apple Human Interface Guidelines
+
+The design base is the `dickwu/apple-design-skill` HIG snapshot in
+`.agents/skills/apple-design/references/`. Desktop vocabulary is translated with
+`cross-platform.md`: macOS → desktop web, semantic `NSColor` roles → CSS custom
+properties, `NSVisualEffectView` → `backdrop-filter`, VoiceOver → ARIA.
+
+Only HIG foundations and the desktop lens apply to an injected web layer.
+Native navigation patterns (menu bar, window controls, sheets) do not.
+
+| HIG page | Rule used here |
+|---|---|
+| `accessibility.md › Vision` | 4.5:1 body contrast; desktop type floor; state never by color alone |
+| `typography.md › Ensuring legibility` | macOS default 13 pt, minimum 10 pt; weights 500–700 |
+| `color.md › Best practices` | one meaning per color; light and dark variants from tokens |
+| `layout.md › Visual hierarchy` | one band fused to the composer; alignment and grouping carry hierarchy |
+| `materials.md › Liquid Glass` | blur only on the floating functional layer, never in content |
+| `buttons.md › Style` | one prominent action; a press state on every custom button |
+| `icons.md › Best practices` | one weight-matched icon language; text labels remain |
+| `motion.md › Best practices` | purposeful, brief, cancellable; reduced-motion answer |
+| `writing.md › Best practices` | verb-first labels; ellipsis when a button opens another view |
+| `dark-mode.md › Best practices` | both appearances specified; no app-specific appearance switch |
+
+Full review with citations: `docs/design-review-apple-hig-2026-11-23.md`.
+
 ## Scope
 
 Desktop Chrome/Edge extension, injected as plain DOM/CSS into third-party AI
-chat sites. Apple HIG applies as principles and foundations (accessibility,
-color, typography, layout, writing), not as iOS/macOS platform conventions.
-See `references/cross-platform.md` in the apple-design skill for vocabulary.
+chat sites. HIG foundations govern the artifact; iOS/macOS navigation
+conventions are translated, not copied.
 
 The artifact: `#zs-bar` (status + Start/Stop + MCP target + site switch),
 `#zs-composer-glow` (the ring), `#zs-menu`, `#zs-target-menu`, `#zs-mcp-pop`,

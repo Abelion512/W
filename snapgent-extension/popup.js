@@ -206,10 +206,10 @@ onClick("rotate-token", (e) => {
   button.textContent = "Rotating…";
   chrome.runtime.sendMessage({ type: "rotate_token" }, (r) => {
     if (r && r.ok) {
-      button.textContent = "🔑 Rotate token";
+      button.textContent = "Rotate token";
     } else {
       button.textContent = "✗ Rotation failed";
-      setTimeout(() => { button.textContent = "🔑 Rotate token"; }, 3000);
+      setTimeout(() => { button.textContent = "Rotate token"; }, 3000);
       console.warn("token rotation failed:", r && r.error);
     }
     setTimeout(refresh, 600);
