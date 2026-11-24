@@ -79,6 +79,24 @@ function onClick(id, handler) {
   if (node) node.addEventListener("click", handler);
 }
 
+// A closed tab or an invalidated context must not become an unhandled promise
+// or a silent "Receiving end does not exist" console error.
+function safeSend(payload, onResponse) {
+  try {
+    const p = chrome.runtime.sendMessage(payload, (r) => {
+      void chrome.runtime.lastError;
+      if (onResponse) onResponse(r);
+    });
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch {}
+}
+function safeTabSend(tabId, payload) {
+  try {
+    const p = chrome.tabs.sendMessage(tabId, payload, () => void chrome.runtime.lastError);
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch {}
+}
+
 function render(s) {
   const state = document.getElementById("state");
   const tools = document.getElementById("tools");
@@ -176,11 +194,11 @@ function shouldUnpark(status) {
 
 function refresh() {
   if (!HAS_RUNTIME) return;
-  chrome.runtime.sendMessage({ type: "status" }, (s) => {
+  safeSend({ type: "status" }, (s) => {
     if (!s) return;
     if (shouldUnpark(s)) {
       unparkedOnce = true;
-      chrome.runtime.sendMessage({ type: "reconnect" }, () => setTimeout(refresh, 800));
+      safeSend({ type: "reconnect" }, () => setTimeout(refresh, 800));
       return;
     }
     render(s);
@@ -188,11 +206,11 @@ function refresh() {
 }
 
 onClick("reconnect", () => {
-  chrome.runtime.sendMessage({ type: "reconnect" }, () => setTimeout(refresh, 600));
+  safeSend({ type: "reconnect" }, () => setTimeout(refresh, 600));
 });
 onClick("restart", (e) => {
   e.target.textContent = "Restarting…";
-  chrome.runtime.sendMessage({ type: "restart_mcp" }, () => {
+  safeSend({ type: "restart_mcp" }, () => {
     e.target.textContent = "⟳ Restart";
     setTimeout(refresh, 600);
   });
@@ -203,14 +221,15 @@ onClick("save-token", () => {
   const value = input.value.trim();
   if (!value) return;
   chrome.storage.local.set({ bridgeToken: value }, () => {
+    void chrome.runtime.lastError;
     input.value = "";
-    chrome.runtime.sendMessage({ type: "reconnect" }, () => setTimeout(refresh, 800));
+    safeSend({ type: "reconnect" }, () => setTimeout(refresh, 800));
   });
 });
 onClick("rotate-token", (e) => {
   const button = e.target;
   button.textContent = "Rotating…";
-  chrome.runtime.sendMessage({ type: "rotate_token" }, (r) => {
+  safeSend({ type: "rotate_token" }, (r) => {
     if (r && r.ok) {
       button.textContent = "Rotate token";
     } else {
@@ -223,11 +242,12 @@ onClick("rotate-token", (e) => {
 });
 onClick("forget-token", () => {
   chrome.storage.local.remove("bridgeToken", () => {
+    void chrome.runtime.lastError;
     const input = element("token");
     if (input) input.value = "";
     // Reconnect without a token: the bridge answers 1008 and the pairing card
     // comes back, so a fresh token can be pasted.
-    chrome.runtime.sendMessage({ type: "reconnect" }, () => setTimeout(refresh, 800));
+    safeSend({ type: "reconnect" }, () => setTimeout(refresh, 800));
   });
 });
 // Settings live in the in-page panel, so it needs a supported AI tab. Never
@@ -241,19 +261,32 @@ const openSettings = () => {
     const target = supported.find((t) => t.active) || supported[0];
     if (target) {
       chrome.tabs.update(target.id, { active: true });
-      chrome.tabs.sendMessage(target.id, { type: "zs-open-menu" });
+      safeTabSend(target.id, { type: "zs-open-menu" });
       return;
     }
     chrome.tabs.create({ url: DEFAULT_AI_URL }, (tab) => {
       if (!tab || typeof chrome.tabs.onUpdated?.addListener !== "function") return;
-      const onUpdated = (id, info) => {
-        if (id !== tab.id || info.status !== "complete") return;
+      const detach = () => {
         chrome.tabs.onUpdated.removeListener(onUpdated);
+        if (chrome.tabs.onRemoved && typeof chrome.tabs.onRemoved.removeListener === "function") {
+          chrome.tabs.onRemoved.removeListener(onRemoved);
+        }
+      };
+      const onRemoved = (id) => { if (id === tab.id) detach(); };
+      const onUpdated = (id, info) => {
+        if (id !== tab.id) return;
+        // A fresh tab emits "loading" before "complete"; detaching here would
+        // miss the one load we are waiting for and never open the panel.
+        if (!info || info.status !== "complete") return;
+        detach();
         // The content script mounts the bar right after load, so give it a beat
         // before asking it to open the panel (a lost message is silent).
-        setTimeout(() => chrome.tabs.sendMessage(tab.id, { type: "zs-open-menu" }), 1200);
+        setTimeout(() => safeTabSend(tab.id, { type: "zs-open-menu" }), 1200);
       };
       chrome.tabs.onUpdated.addListener(onUpdated);
+      if (chrome.tabs.onRemoved && typeof chrome.tabs.onRemoved.addListener === "function") {
+        chrome.tabs.onRemoved.addListener(onRemoved);
+      }
     });
   });
 };
@@ -277,5 +310,10 @@ if (hint) {
 }
 if (HAS_RUNTIME) {
   refresh();
-  setInterval(refresh, 2000);
+  const refreshTimer = setInterval(refresh, 2000);
+  // Popups are short-lived, but a docked/devtools popup can stay open; drop
+  // the poll when its window goes away instead of leaving it running.
+  if (typeof window !== "undefined" && window && typeof window.addEventListener === "function") {
+    window.addEventListener("pagehide", () => clearInterval(refreshTimer), { once: true });
+  }
 }

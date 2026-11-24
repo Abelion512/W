@@ -231,17 +231,23 @@ const ZSProvider = (() => {
     if (!el) return false;
     if (el.closest && el.closest("#zs-root")) return false;
     if (el.getAttribute && el.getAttribute("aria-hidden") === "true") return false;
-    if (el.offsetParent !== null && el.offsetParent !== undefined) return true;
-    // position:fixed overlays (e.g. Angular CDK dialogs) have offsetParent === null.
-    if (typeof el.getClientRects === "function") return el.getClientRects().length > 0;
     try {
       if (typeof getComputedStyle === "function") {
         const st = getComputedStyle(el);
-        if (st && (st.display === "none" || st.visibility === "hidden")) return false;
-        if (st && st.position === "fixed") return true;
+        if (st && (st.display === "none" || st.visibility === "hidden" || st.opacity === "0")) return false;
       }
     } catch {}
-    return el.offsetParent !== null;
+    if (el.offsetParent !== null && el.offsetParent !== undefined) return true;
+    // position:fixed overlays (e.g. Angular CDK dialogs) have offsetParent === null.
+    // Collapsed Angular submenus also have offsetParent === null but a 0x0 box.
+    if (typeof el.getClientRects === "function" && el.getClientRects().length > 0) {
+      if (typeof el.getBoundingClientRect === "function") {
+        const r = el.getBoundingClientRect();
+        return !!r && r.width > 0 && r.height > 0;
+      }
+      return true;
+    }
+    return false;
   }
 
   // In Gemini Task Mode ("Thinking it through..." or Remote computer panel),
@@ -554,69 +560,202 @@ const ZSProvider = (() => {
     if (b) try { b.click(); } catch {}
   }
 
-  // A2A runs pin Gemini 4 Hydrogen with thinking level High. Restore that at
-  // session startup only; the user stays free to change the picker afterwards.
-  async function ensureFocusMode() {
-    const modelButton = () =>
-      [...document.querySelectorAll("button")].find(
-        (b) => b.offsetParent !== null && /hydrogen|neon/i.test(b.textContent || "")
-      );
-    const pickerButton = () =>
-      modelButton() ||
-      [...document.querySelectorAll("button")].find(
-        (b) => b.offsetParent !== null && /mode picker/i.test(b.getAttribute("aria-label") || "")
-      ) ||
-      null;
-    const item = (re) =>
-      [...document.querySelectorAll("gem-menu-item")].find(
-        (m) => m.getAttribute("role") === "menuitemradio" && re.test((m.textContent || "").trim())
-      );
-    const selected = (m) => !!m && /\bselected\b/.test(String(m.className || ""));
-    const btn = modelButton();
+  function findModePickerButton() {
+    const btns = [...document.querySelectorAll("button")].filter(isVisible);
+    return (
+      btns.find((b) => b.getAttribute("data-test-id") === "bard-mode-menu-button") ||
+      btns.find((b) => /mode picker/i.test(b.getAttribute("aria-label") || "")) ||
+      btns.find((b) => /hydrogen|neon/i.test(b.textContent || "")) ||
+      null
+    );
+  }
+
+  function parseModeLabel(btn) {
+    if (!btn) return { raw: "", model: "unknown", thinking: "" };
+    const rawText = (btn.innerText || btn.textContent || "").trim();
+    const ariaRaw = (btn.getAttribute("aria-label") || "").trim();
+    const ariaCur = ariaRaw.replace(/^open mode picker,?\s*(?:currently)?\s*/i, "").trim();
+    const combined = [ariaCur, rawText]
+      .filter(Boolean)
+      .join(" ")
+      .replace(/([a-z])([A-Z])/g, "$1 $2");
+    let model = ariaCur || rawText || "unknown";
+    if (/hydrogen/i.test(combined)) model = "4 Hydrogen";
+    else if (/neon/i.test(combined)) model = "4 Neon";
+    else if (/\bauto\b/i.test(combined)) model = "Auto";
+    let thinking = "";
+    if (/\bhigh\b/i.test(combined)) thinking = "High";
+    else if (/\bmedium\b/i.test(combined)) thinking = "Medium";
+    else if (/\blow\b/i.test(combined)) thinking = "Low";
+    // Live Gemini omits "Low" from the label ("Hydrogen" / "Neon") while it
+    // always prints "Medium" / "High", so a bare model name means Low.
+    if (!thinking && (model === "4 Hydrogen" || model === "4 Neon")) thinking = "Low";
+    return { raw: ariaCur || rawText, model, thinking };
+  }
+
+  function normalizeModeTarget(target) {
+    if (target && target.preserveMode) return { preserveMode: true, model: "", thinking: "" };
+    const hasExplicit = !!(target && (target.model || target.thinking));
+    const rawModel = String((target && target.model) || "").trim();
+    const rawThinking = String((target && target.thinking) || "").trim();
+    let model = "";
+    if (/hydrogen/i.test(rawModel)) model = "4 Hydrogen";
+    else if (/neon/i.test(rawModel)) model = "4 Neon";
+    else if (/auto/i.test(rawModel)) model = "Auto";
+    else if (!hasExplicit) model = "4 Hydrogen";
+    let thinking = "";
+    if (model !== "Auto") {
+      if (/high/i.test(rawThinking)) thinking = "High";
+      else if (/medium/i.test(rawThinking)) thinking = "Medium";
+      else if (/low/i.test(rawThinking)) thinking = "Low";
+      else if (!hasExplicit) thinking = "High";
+    }
+    return { preserveMode: false, model, thinking };
+  }
+
+  const visibleMenuItems = () => [...document.querySelectorAll("gem-menu-item")].filter(isVisible);
+  const isItemSelected = (m) =>
+    !!m && (/\bselected\b/.test(String(m.className || "")) || m.getAttribute("aria-checked") === "true");
+  const isUpsellItem = (m) =>
+    !!m && /upsell/i.test(String(m.getAttribute("data-mode-id") || m.getAttribute("data-test-id") || ""));
+
+  function findMenuItem(re, role) {
+    return visibleMenuItems().find(
+      (m) => (!role || m.getAttribute("role") === role) && re.test((m.textContent || "").trim())
+    ) || null;
+  }
+
+  async function openModeMenu(btn) {
+    if (visibleMenuItems().length > 0) return true;
+    const b = findModePickerButton() || btn;
+    if (!b) return false;
+    try { b.click(); } catch {}
+    const opened = await waitFor(() => visibleMenuItems().length > 0, 1500);
+    if (opened) await sleep(120); // let Angular finish wiring item handlers
+    return opened;
+  }
+
+  // Live Angular <gem-menu> ignores Escape dispatched on `document` (validated
+  // 2026-11 via CDP: 7 items stayed open) but closes on Escape dispatched on a
+  // menu item. No .cdk-overlay-backdrop exists; .popover-click-shield is the
+  // click-outside surface, kept as a fallback.
+  async function closeModeMenu() {
+    if (visibleMenuItems().length === 0) return;
+    const esc = () => new KeyboardEvent("keydown", {
+      key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true,
+    });
+    const first = visibleMenuItems()[0];
+    try { if (first && typeof first.dispatchEvent === "function") first.dispatchEvent(esc()); } catch {}
+    try { if (visibleMenuItems().length > 0) document.dispatchEvent(esc()); } catch {}
+    if (await waitFor(() => visibleMenuItems().length === 0, 600)) return;
+    const shield = document.querySelector(".popover-click-shield") ||
+      document.querySelector(".cdk-overlay-backdrop") || findModePickerButton();
+    try { if (shield) shield.click(); } catch {}
+    await waitFor(() => visibleMenuItems().length === 0, 500);
+  }
+
+  async function selectModelItem(btn, wantModel) {
+    const re = wantModel === "Auto" ? /^auto\b/i : new RegExp(wantModel.replace(/\s+/g, "\\s+"), "i");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!(await openModeMenu(findModePickerButton() || btn))) continue;
+      const item = findMenuItem(re, "menuitemradio");
+      if (!item || isUpsellItem(item)) { await closeModeMenu(); return false; }
+      if (!isItemSelected(item)) {
+        try { item.click(); } catch {}
+        await waitFor(() => parseModeLabel(findModePickerButton()).model === wantModel, 4000);
+        await waitFor(() => visibleMenuItems().length === 0, 600);
+      }
+      if (parseModeLabel(findModePickerButton()).model === wantModel) return true;
+      diag("mode_switch.retry", { step: "model", wantModel, attempt });
+      await closeModeMenu();
+      await sleep(250);
+    }
+    return parseModeLabel(findModePickerButton()).model === wantModel;
+  }
+
+  async function selectThinkingItem(btn, wantThinking) {
+    const optRe = new RegExp(`^${wantThinking}\\b`, "i");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!(await openModeMenu(findModePickerButton() || btn))) continue;
+      if (!findMenuItem(optRe, "menuitemradio")) {
+        const trigger = findMenuItem(/thinking level/i) ||
+          visibleMenuItems().find((m) => m.getAttribute("value") === "thinking_level");
+        if (!trigger) { await closeModeMenu(); return false; }
+        try { trigger.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true })); } catch {}
+        try { trigger.click(); } catch {}
+        if (await waitFor(() => !!findMenuItem(optRe, "menuitemradio"), 1500)) await sleep(120);
+      }
+      const opt = findMenuItem(optRe, "menuitemradio");
+      if (opt && !isItemSelected(opt)) {
+        try { opt.click(); } catch {}
+        await waitFor(() => parseModeLabel(findModePickerButton()).thinking === wantThinking, 4000);
+      }
+      await closeModeMenu();
+      if (parseModeLabel(findModePickerButton()).thinking === wantThinking) return true;
+      diag("mode_switch.retry", { step: "thinking", wantThinking, attempt });
+      await sleep(250);
+    }
+    return parseModeLabel(findModePickerButton()).thinking === wantThinking;
+  }
+
+  // Restore or switch Gemini's model/thinking mode at session startup (or on explicit
+  // mode metadata). Manual UI starts pass { preserveMode: true } so user selection holds.
+  async function ensureFocusMode(target) {
+    let btn = findModePickerButton();
     if (!btn) {
-      const fallbackBtn = pickerButton();
-      const observed = fallbackBtn ? (fallbackBtn.textContent || "").trim() : "";
-      return { applied: false, model: observed || "unknown", thinking: "" };
+      // Narrow/mobile Gemini layout lazy-mounts the top-bar mode picker only
+      // after the composer receives focus/click.
+      const ed = getEditor();
+      if (ed) {
+        try {
+          if (typeof ed.focus === "function") ed.focus();
+          if (typeof ed.click === "function") ed.click();
+        } catch {}
+        await waitFor(() => !!findModePickerButton(), 1500);
+        btn = findModePickerButton();
+      }
     }
-    if (!document.querySelector("gem-menu-item")) {
-      try { btn.click(); } catch {}
+    const observed = parseModeLabel(btn);
+    if (!btn) return { applied: false, model: observed.model, thinking: observed.thinking };
+    const want = normalizeModeTarget(target);
+    if (want.preserveMode) {
+      return { applied: true, model: observed.model, thinking: observed.thinking };
     }
-    for (let i = 0; i < 20; i++) {
-      if (item(/4 Hydrogen/i) && item(/^High\b/i)) break;
-      await sleep(150);
+    const modelOk = !want.model || observed.model === want.model;
+    const thinkOk = !want.thinking || want.model === "Auto" || observed.thinking === want.thinking;
+    if (modelOk && thinkOk) {
+      return { applied: true, model: observed.model, thinking: observed.thinking };
     }
-    const model = item(/4 Hydrogen/i);
-    if (model && !selected(model)) { try { model.click(); } catch {} }
-    await sleep(200);
-    const high = item(/^High\b/i);
-    if (high && !selected(high)) { try { high.click(); } catch {} }
-    await waitFor(() => {
-      const b = modelButton();
-      return !!b && /\bhigh\b/i.test(b.textContent || "");
-    }, 4000);
-    try { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch {}
-    const afterBtn = pickerButton();
-    const afterText = afterBtn ? (afterBtn.textContent || "").trim() : "";
-    const applied = /4\s*hydrogen/i.test(afterText) && /\bhigh\b/i.test(afterText);
-    return {
-      applied,
-      model: applied ? "4 Hydrogen" : (afterText || "unknown"),
-      thinking: /\bhigh\b/i.test(afterText) ? "High" : "",
-    };
+    let applied = true;
+    if (want.model && observed.model !== want.model) {
+      applied = await selectModelItem(btn, want.model);
+    }
+    const mid = parseModeLabel(findModePickerButton());
+    if (applied && want.thinking && mid.model !== "Auto" && mid.thinking !== want.thinking) {
+      applied = await selectThinkingItem(findModePickerButton() || btn, want.thinking);
+    }
+    await closeModeMenu();
+    const after = parseModeLabel(findModePickerButton());
+    const finalModelOk = !want.model || after.model === want.model;
+    const finalThinkOk = !want.thinking || after.model === "Auto" || after.thinking === want.thinking;
+    const ok = applied && finalModelOk && finalThinkOk;
+    diag("mode_switch", { observed, want, after, applied: ok });
+    return { applied: ok, model: after.model, thinking: after.thinking };
   }
 
   // No other site modes to enforce on Gemini.
   function enforceComposer() { return { ready: true }; }
-  async function ensureComposerReady(reason) {
-    let mode = { applied: false, model: "", thinking: "" };
-    if (reason === "startup") {
-      mode = await ensureFocusMode();
+  async function ensureComposerReady(reason, opts) {
+    let mode;
+    if (reason === "startup" || reason === "mode") {
+      mode = await ensureFocusMode(opts);
     } else {
-      const btn = [...document.querySelectorAll("button")].find(
-        (b) => b.offsetParent !== null && (/hydrogen|neon/i.test(b.textContent || "") || /mode picker/i.test(b.getAttribute("aria-label") || ""))
-      );
-      const txt = btn ? (btn.textContent || "").trim() : "";
-      mode = { applied: /4\s*hydrogen/i.test(txt) && /\bhigh\b/i.test(txt), model: txt || "unknown", thinking: /\bhigh\b/i.test(txt) ? "High" : "" };
+      const cur = parseModeLabel(findModePickerButton());
+      mode = {
+        applied: cur.model === "4 Hydrogen" && cur.thinking === "High",
+        model: cur.model,
+        thinking: cur.thinking,
+      };
     }
     const state = { ready: !!getEditor(), model: mode.model, thinking: mode.thinking, modeApplied: mode.applied };
     diag("mode_ready", { reason, provider: "gemini", ...state });

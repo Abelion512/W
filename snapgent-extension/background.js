@@ -110,7 +110,7 @@ const PROVIDER_CAPABILITIES = {
 // open tab instead of sending every later task into the same dead provider.
 // An explicit `provider` pin still wins: callers that test a specific site
 // must be able to see its limit message for themselves.
-const LIMIT_RE = /(quota|rate.?limit|too many requests|free tier|limit reached|usage limit|daily limit|try again in|resets? (?:in|at)|captcha|sign in to continue)/i;
+const LIMIT_RE = /(quota|rate.?limit|rate limited|too many requests|free tier|free allowance|limit reached|usage limit|daily limit|hourly limit|token limit|per hour|1,000,000|try again in|resets? (?:in|at)|captcha|sign in to continue)/i;
 const LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
 const limitedUntil = new Map(); // provider -> epoch ms
 
@@ -188,7 +188,7 @@ function routeFor(metadata) {
   const largeInput = m.largeInput === true;
   const avoid = m.avoidProviders;
   const hasAvoid = Array.isArray(avoid) && avoid.length > 0;
-  if (!needsVision && !needsWeb && !largeInput && !hasAvoid) return baseRoute;
+  if (!needsVision && !needsWeb && !largeInput && !hasAvoid) return withTabTarget(baseRoute, m);
 
   const avoided = new Set(hasAvoid ? avoid.map((id) => String(id).toLowerCase()) : []);
   const baseProviders = baseRoute.providers;
@@ -201,9 +201,21 @@ function routeFor(metadata) {
     return true;
   });
   if (filtered.length === 0) {
-    return { ...baseRoute, providers: baseProviders, capabilityFallback: true };
+    return withTabTarget({ ...baseRoute, providers: baseProviders, capabilityFallback: true }, m);
   }
-  return { ...baseRoute, providers: filtered };
+  return withTabTarget({ ...baseRoute, providers: filtered }, m);
+}
+
+function withTabTarget(route, meta) {
+  if (!route) return null;
+  const tabId = typeof meta.tabId === "number" ? meta.tabId : null;
+  const tabUrl = typeof meta.tabUrl === "string" ? meta.tabUrl.trim() : "";
+  if (tabId === null && !tabUrl) return route;
+  return {
+    ...route,
+    ...(tabId !== null ? { tabId } : {}),
+    ...(tabUrl ? { tabUrl } : {}),
+  };
 }
 
 // The only place a provider tab is chosen from a route. Returns null when no
@@ -212,14 +224,31 @@ function tabForRoute(tabs, route) {
   if (!route) return null;
   for (const provider of route.providers) {
     const hosts = PROVIDER_HOSTS[provider] || [];
-    const hit = tabs.find((t) => hosts.some((h) => String(t.url || "").includes(h)));
-    if (hit) return hit;
+    const hits = tabs.filter((t) => hosts.some((h) => String(t.url || "").includes(h)));
+    if (!hits.length) continue;
+    if (typeof route.tabId === "number") {
+      const byId = hits.find((t) => t.id === route.tabId);
+      if (byId) return byId;
+    }
+    if (route.tabUrl) {
+      const byUrl = hits.find((t) => String(t.url || "").includes(route.tabUrl));
+      if (byUrl) return byUrl;
+    }
+    return hits.find((t) => t.active) || hits[0];
   }
   return null;
 }
 
 const RECONNECT_MIN = 1000;
 const RECONNECT_MAX = 5000;
+// Jitter spreads simultaneous re-dials from many workers/tabs so a bridge that
+// just came back is not hit by a synchronised burst. Half-jitter keeps the
+// first retry inside the 1.6 s window the reconnect tests rely on.
+const RECONNECT_JITTER = 0.2;
+// A malformed or oversized frame must never be handed to JSON.parse: the
+// bridge may send project data, and a broken/giant payload would block the
+// worker or blow memory without ever reaching a handler.
+const MAX_FRAME_CHARS = 2 * 1024 * 1024;
 // Heartbeat is driven by the MV3 chrome.alarms "zs-keepalive" (30s) alarm.
 // If no message (incl. pong) arrives within this window while we believe we're
 // connected, the socket is half-open: force a reconnect instead of letting
@@ -310,6 +339,34 @@ function log(...a) {
   console.log("[zs-bg]", ...a);
 }
 
+// chrome.* has both callback and promise shapes across MV3 versions and test
+// stubs. Consume lastError and swallow rejections so a closed tab or an
+// invalidated context can never surface as an unhandled rejection.
+function sendToRuntime(msg) {
+  try {
+    const p = chrome.runtime.sendMessage(msg, () => void chrome.runtime.lastError);
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch {}
+}
+function sendToTab(tabId, msg) {
+  try {
+    const p = chrome.tabs.sendMessage(tabId, msg, () => void chrome.runtime.lastError);
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch {}
+}
+function storageSet(obj) {
+  try {
+    const p = chrome.storage.local.set(obj);
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch {}
+}
+function storageRemove(key) {
+  try {
+    const p = chrome.storage.local.remove(key);
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch {}
+}
+
 // ── WebSocket lifecycle ─────────────────────────────────────────────────
 function readBridgeToken() {
   // Never leave connect() awaiting this: it holds the `connecting` guard, and a
@@ -335,10 +392,17 @@ function readBridgeToken() {
 let lastUsage = null;
 const authReady = new Promise((resolve) => {
   // Mirror readBridgeToken's timeout: a storage callback that never fires must
-  // not block every future dial for the life of the worker.
+  // not block every future dial for the life of the worker. Clear the timeout
+  // once the read lands so a long-lived worker carries no orphan timers.
   let settled = false;
-  const finish = () => { if (!settled) { settled = true; resolve(); } };
-  setTimeout(finish, 2000);
+  let timer = null;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    if (timer) clearTimeout(timer);
+    resolve();
+  };
+  timer = setTimeout(finish, 2000);
   try {
     chrome.storage.local.get([AUTH_STATE_KEY, "lastUsage"], (stored) => {
       authRequired = !!(stored && stored[AUTH_STATE_KEY]);
@@ -359,6 +423,7 @@ async function connect() {
   if (connecting) return;
   connecting = true;
   clearTimeout(reconnectTimer);
+  reconnectTimer = null;
   try {
     if (bridgeToken === null) bridgeToken = await readBridgeToken();
     const url = ZSPairing.bridgeUrl(URL, bridgeToken);
@@ -374,7 +439,7 @@ async function connect() {
   ws.onopen = () => {
     connected = true;
     authRequired = false;
-    chrome.storage.local.remove(AUTH_STATE_KEY); // the token is accepted again
+    storageRemove(AUTH_STATE_KEY); // the token is accepted again
     rotatingToken = false;
     reconnectDelay = RECONNECT_MIN;
     lastMessageAt = Date.now();
@@ -386,6 +451,9 @@ async function connect() {
 
   ws.onmessage = (ev) => {
     lastMessageAt = Date.now();
+    // Fail closed at the boundary: only bounded strings are parsed. Oversized
+    // or non-string frames are dropped before they can stall the worker.
+    if (!ev || typeof ev.data !== "string" || ev.data.length > MAX_FRAME_CHARS) return;
     let msg;
     try {
       msg = JSON.parse(ev.data);
@@ -420,7 +488,7 @@ async function connect() {
       savePromptMeta();
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
-      chrome.storage.local.set({ [AUTH_STATE_KEY]: true });
+      storageSet({ [AUTH_STATE_KEY]: true });
       return;
     }
     scheduleReconnect();
@@ -434,8 +502,16 @@ async function connect() {
 
 function scheduleReconnect() {
   clearTimeout(reconnectTimer);
-  reconnectTimer = setTimeout(connect, reconnectDelay);
+  // Full-jittered exponential backoff with a hard cap. One timer owns all
+  // wake-up sources (onclose, onerror, alarms, tab/popup activity), so a burst
+  // of triggers can never stack overlapping dials.
+  const factor = 1 + (Math.random() * 2 - 1) * RECONNECT_JITTER;
+  const delay = Math.min(Math.max(1, Math.round(reconnectDelay * factor)), RECONNECT_MAX);
   reconnectDelay = Math.min(reconnectDelay * 1.7, RECONNECT_MAX);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect().catch(() => {});
+  }, delay);
 }
 
 function flushConnectionWaiters() {
@@ -601,6 +677,9 @@ async function refreshBridgeStatus(force = false) {
 }
 
 function handleBridgeMessage(msg) {
+  // JSON.parse accepts "null", "42" and arrays; the `in`/property reads below
+  // would throw on those and break the socket's message handler.
+  if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
   if ("studio" in msg && (typeof msg.studio === "boolean" || msg.studio === null)) {
     studioConnected = msg.studio;
   }
@@ -722,8 +801,14 @@ function savePromptMeta() {
 
 const promptMetaReady = new Promise((resolve) => {
   let settled = false;
-  const finish = () => { if (!settled) { settled = true; resolve(); } };
-  setTimeout(finish, 500);
+  let timer = null;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    if (timer) clearTimeout(timer);
+    resolve();
+  };
+  timer = setTimeout(finish, 500);
   try {
     const sess = typeof chrome !== "undefined" && chrome.storage && chrome.storage.session;
     if (!sess || typeof sess.get !== "function") { finish(); return; }
@@ -849,6 +934,13 @@ async function handleSubmitPrompt(msg) {
     // the first sendMessage can fail with "Receiving end does not exist" even
     // though the script lands a beat later (measured live: Claude after reload).
     // Retry briefly before declaring the tab dead.
+    const m = msg.metadata && typeof msg.metadata === "object" ? msg.metadata : {};
+    const model = String(m.model || m.geminiModel || "").trim();
+    const thinking = String(m.thinking || m.thinkingLevel || "").trim();
+    const preserveMode = m.preserveMode === true;
+    const modeOpt = (model || thinking || preserveMode)
+      ? { model, thinking, preserveMode }
+      : null;
     const trySend = () => new Promise((resolve, reject) => {
       // Callback form: the content script answers LATER via an "a2a_result"
       // runtime message, so the channel closing is expected — not a failure
@@ -856,8 +948,17 @@ async function handleSubmitPrompt(msg) {
       // Only "no receiver" is a real error, and it must not race the content
       // script's own reply.
       try {
-        chrome.tabs.sendMessage(tab.id, { type: "zs-a2a-prompt", prompt: msg.prompt, promptId, route: route ? route.tier : null },
-          () => resolve(chrome.runtime.lastError || null));
+        chrome.tabs.sendMessage(
+          tab.id,
+          {
+            type: "zs-a2a-prompt",
+            prompt: msg.prompt,
+            promptId,
+            route: route ? route.tier : null,
+            ...(modeOpt ? { mode: modeOpt } : {}),
+          },
+          () => resolve(chrome.runtime.lastError || null)
+        );
       } catch (e) {
         reject(e);
       }
@@ -901,7 +1002,7 @@ function failAllPending(reason) {
 // (`lastUsage` itself is declared with the other worker state, above authReady.)
 function setUsage(patch) {
   lastUsage = { ...(lastUsage || {}), ...patch, at: Date.now() };
-  try { chrome.storage.local.set({ lastUsage }).catch(() => {}); } catch {}
+  storageSet({ lastUsage });
   broadcastStatus();
 }
 function providerOf(url) {
@@ -916,10 +1017,43 @@ function statusObj() {
 }
 
 function broadcastStatus() {
-  chrome.runtime.sendMessage(statusObj()).catch(() => {});
-  chrome.tabs.query({ url: PROVIDER_URLS }, (tabs) => {
-    for (const t of tabs) chrome.tabs.sendMessage(t.id, statusObj()).catch(() => {});
-  });
+  sendToRuntime(statusObj());
+  try {
+    chrome.tabs.query({ url: PROVIDER_URLS }, (tabs) => {
+      for (const t of (tabs || [])) sendToTab(t.id, statusObj());
+    });
+  } catch {}
+}
+
+// ── tab lifecycle: drop state bound to dead or reloading tabs ─────────────
+function forgetTab(tabId) {
+  if (typeof tabId !== "number") return;
+  let changed = false;
+  for (const [id, meta] of promptMeta) {
+    if (meta && meta.tabId === tabId) { promptMeta.delete(id); changed = true; }
+  }
+  if (changed) savePromptMeta();
+}
+
+if (typeof chrome !== "undefined" && chrome.tabs) {
+  if (chrome.tabs.onRemoved && typeof chrome.tabs.onRemoved.addListener === "function") {
+    chrome.tabs.onRemoved.addListener((tabId) => forgetTab(tabId));
+  }
+  if (chrome.tabs.onUpdated && typeof chrome.tabs.onUpdated.addListener === "function") {
+    chrome.tabs.onUpdated.addListener((tabId, info) => {
+      // A reload/navigation destroys the content script; a prompt bound to the
+      // old document can never report its result.
+      if (info && info.status === "loading") forgetTab(tabId);
+    });
+  }
+  if (chrome.tabs.onActivated && typeof chrome.tabs.onActivated.addListener === "function") {
+    chrome.tabs.onActivated.addListener(() => {
+      // Cheap, stale-guarded refresh after a tab switch. connect() is guarded
+      // against overlapping dials and stays parked on a 1008 refusal.
+      refreshBridgeStatus();
+      if (!connected && !authRequired) connect().catch(() => {});
+    });
+  }
 }
 
 // ── messages from content.js / popup.js ─────────────────────────────────
@@ -1047,7 +1181,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "reconnect":
         reconnectDelay = RECONNECT_MIN;
         authRequired = false; // the popup may have just saved a valid token
-        chrome.storage.local.remove(AUTH_STATE_KEY);
+        storageRemove(AUTH_STATE_KEY);
         bridgeToken = null; // re-read: the popup may have just saved a token
         connect().catch(() => {});
         sendResponse({ ok: true });
@@ -1061,7 +1195,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       default:
         sendResponse({ ok: false, error: "unknown message" });
     }
-  })();
+  })().catch((error) => {
+    // An async handler rejection must never become an unhandled promise; the
+    // caller still needs a response so it cannot hang waiting for one.
+    log("message handler failed", error);
+    try { sendResponse({ ok: false, error: String((error && error.message) || error) }); } catch {}
+  });
   return true; // async sendResponse
 });
 

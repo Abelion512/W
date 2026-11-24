@@ -105,7 +105,7 @@ Rules:
   runtime modules (`bridge.py`, `workspace_mcp.py`), but test and live-e2e
   scripts live in their own folders so the root lists only shippable code.
   `python -m pytest -q` from the root works via `pythonpath = ["."]` in
-  `pyproject.toml`; `python -m unittest discover -s tests` works via `python -m`.
+  `pyproject.toml`; `python -m unittest discover -s tests` also works.
 - **Line length ~100, not 79/80.** The 30-tool catalog is written as
   one `_tool(...)` per line for scanability; PEP 8 itself says
   consistency within a module wins. New code should stay ≤100.
@@ -114,10 +114,10 @@ Rules:
   (~700) are next. Per the review skill, a change that materially
   grows a large file should extract helpers first. Do not add new
   subsystems to `main.js` — put them in `core/` or a provider.
-- **No `requirements.txt` / `pyproject` dependencies.** Runtime is
-  stdlib + `websockets` only; CI installs test deps explicitly. Adding
-  a dependency needs the review-skill checklist (maintained, licensed,
-  vulnerabilities checked, lockfile reviewed).
+- **Runtime deps: stdlib + `websockets` only.** The pin lives in
+  `requirements.txt`; `pyproject.toml` carries pytest config only. CI
+  installs test deps explicitly. Adding a dependency needs a stated reason
+  and the review checklist (maintained, licensed, vulnerabilities checked).
 - **Docstrings are sparse.** Tool descriptions in `TOOLS` and comments
   at non-obvious sites carry the contract for this MCP surface;
   Google-style mandatory docstrings apply to new *public* Python APIs.

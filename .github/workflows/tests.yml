@@ -81,6 +81,8 @@ jobs:
           node snapgent-extension/tests/test-background.js
           node snapgent-extension/tests/test-core-modules.js
           node snapgent-extension/tests/test-gemini.js
+          node snapgent-extension/tests/test-deepseek.js
+          node snapgent-extension/tests/test-ptero.js
           node snapgent-extension/tests/test-guard.js
 
   e2e:

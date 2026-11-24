@@ -72,11 +72,15 @@ const ZSChannel = (() => {
 
     function pollNow() {
       if (stopped) return Promise.resolve();
-      return Promise.resolve(sendFn({ type: "status" })).then(handleStatus);
+      // A throwing handler must not become an unhandled rejection on the
+      // setInterval path (the initial poll already had its own catch).
+      return Promise.resolve(sendFn({ type: "status" })).then(handleStatus).catch(() => {});
     }
 
-    pollNow().catch(() => {});
+    // Arm the interval before the first poll: a synchronous stop inside
+    // handleStatus would otherwise leave an orphan timer behind.
     timerId = setIntervalFn(pollNow, intervalMs);
+    pollNow().catch(() => {});
     return { stop, pollNow, handleStatus };
   }
 
@@ -103,14 +107,21 @@ const ZSChannel = (() => {
         h.onOpenMenu(msg.atBottom ?? false);
       }
       if (msg.type === "zs-a2a-prompt" && h.onA2APrompt) {
-        h.onA2APrompt(msg.prompt, msg.promptId);
+        h.onA2APrompt(msg.prompt, msg.promptId, { mode: msg.mode, route: msg.route });
       }
       if (msg.type === "zs-a2a-abort" && h.onA2AAbort) {
         h.onA2AAbort(msg.promptId);
       }
     };
     runtime.onMessage.addListener(listener);
-    return listener;
+    let removed = false;
+    return function stop() {
+      if (removed) return;
+      removed = true;
+      if (typeof runtime.onMessage.removeListener === "function") {
+        runtime.onMessage.removeListener(listener);
+      }
+    };
   }
 
   return {

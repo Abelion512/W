@@ -429,6 +429,52 @@ const until = async (cond, ms = 1000) => {
   ok("zs-wake-tab message activates sender tab",
      tabUpdates.some((u) => u.tabId === 82 && u.props && u.props.active === true));
 
+  // Active tab wins over earlier background tabs for the same provider.
+  const multiGemTabs = [
+    { id: 91, active: false, url: "https://gemini.google.com/u/5/app/protected" },
+    { id: 92, active: true, url: "https://gemini.google.com/u/5/app/fresh" },
+  ];
+  const activeGemHit = api.tabForRoute(multiGemTabs, api.routeFor({ provider: "gemini" }));
+  ok("tabForRoute prefers active tab among multiple tabs for same provider",
+     activeGemHit && activeGemHit.id === 92);
+
+  // Explicit metadata.tabUrl / metadata.tabId targets that exact tab even when inactive.
+  const urlTargetedHit = api.tabForRoute(multiGemTabs, api.routeFor({ provider: "gemini", tabUrl: "app/fresh" }));
+  ok("tabForRoute respects metadata.tabUrl over order",
+     urlTargetedHit && urlTargetedHit.id === 92);
+  const idTargetedHit = api.tabForRoute([
+    { id: 92, active: true, url: "https://gemini.google.com/u/5/app/fresh" },
+    { id: 91, active: false, url: "https://gemini.google.com/u/5/app/protected" },
+  ], api.routeFor({ provider: "gemini", tabId: 91 }));
+  ok("tabForRoute respects metadata.tabId over active tab",
+     idTargetedHit && idTargetedHit.id === 91);
+
+  // Mode options (model/thinking/preserveMode) forward on zs-a2a-prompt.
+  tabsForQuery = multiGemTabs;
+  tabSends.length = 0;
+  await api.handleSubmitPrompt({
+    id: "p-gem-mode",
+    prompt: "hello",
+    metadata: { provider: "gemini", model: "4 Neon", thinking: "Medium" },
+  });
+  const modeRelay = tabSends.find((s) => s.msg.type === "zs-a2a-prompt" && s.msg.promptId === "p-gem-mode");
+  ok("handleSubmitPrompt forwards mode options on zs-a2a-prompt",
+     modeRelay && modeRelay.tabId === 92 && modeRelay.msg.mode &&
+     modeRelay.msg.mode.model === "4 Neon" && modeRelay.msg.mode.thinking === "Medium");
+
+  // Ptero's 1,000,000 token/hour limit marks Ptero limited via LIMIT_RE.
+  tabsForQuery = [{ id: 93, active: true, url: "https://ptero.pro/" }];
+  tabSends.length = 0;
+  frames.length = 0;
+  await api.handleSubmitPrompt({ id: "p-ptero-lim", prompt: "hi", metadata: { provider: "ptero" } });
+  onRuntimeMessage({
+    type: "a2a_result", promptId: "p-ptero-lim", ok: false,
+    error: "Hourly token limit reached (1,000,000 tokens per hour).",
+  }, {}, () => {});
+  await until(() => frames.some((f) => f.type === "prompt_result" && f.prompt_id === "p-ptero-lim"));
+  ok("Ptero 1M/1h quota error triggers isProviderLimited('ptero')",
+     api.isProviderLimited("ptero") === true);
+
   const failedCount = results.filter((r) => !r).length;
   console.log("\n" + (failedCount ? "FAIL" : "PASS") + "  " + (results.length - failedCount) + "/" + results.length + " checks passed");
   process.exit(failedCount ? 1 : 0);

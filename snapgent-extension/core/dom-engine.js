@@ -118,6 +118,7 @@ const ZSDomEngine = (() => {
 
     async function submitAndGetBase(text, images) {
       captureSendToken();
+      if (A.stop) return P.assistantCount();
       diag("send", { chars: String(text).length, busy: P.isBusyNow() });
       A.injecting = true;
       getUi().inputCover(true);
@@ -129,9 +130,10 @@ const ZSDomEngine = (() => {
         const _settleItem = P.lastAssistant();
         const _settleLen0 = _settleItem ? P.streamLen(_settleItem) : 0;
         await sleep(200);
+        if (A.stop) return P.assistantCount();
         if (_settleItem && _settleItem === P.lastAssistant() &&
             P.streamLen(_settleItem) > _settleLen0) {
-          await waitFor(() => !P.isGenerating(), 4000);
+          await waitFor(() => A.stop || !P.isGenerating(), 4000);
         }
         const base = P.assistantCount();
         const preUser = P.userCount();
@@ -161,6 +163,7 @@ const ZSDomEngine = (() => {
             if (!(await waitVisible()) || A.stop) break; // park (no cap) until foreground; break only on user stop
           }
           await jitterBeforeSend();
+          if (A.stop) break;
           diag("submit.typeAndSend", { hasImages: !!(images && images.length) });
           await P.typeAndSend(text, images);
           // Re-arm the pre-hide window NOW that typeAndSend has returned (the send
@@ -176,7 +179,7 @@ const ZSDomEngine = (() => {
           // and more reliable than waiting for a DOM turn count change.
           await waitFor(() => {
             if (P.editorText().trim() === "") messageSent = true;
-            return messageSent || landed();
+            return A.stop || messageSent || landed();
           }, 3500);
           tries++;
         }
@@ -198,7 +201,8 @@ const ZSDomEngine = (() => {
         // for the whole phase, so don't lift it here between an injection and the
         // next waitForResponse - it stays up until the loop / bootstrap ends.
         if (!A.starting && !A.running) getUi().inputCover(false);
-        setTimeout(() => (A.injecting = false), 400);
+        if (A.stop) A.injecting = false;
+        else setTimeout(() => (A.injecting = false), 400);
         // Camouflage the turn we just injected without waiting on the rAF observer
         // (paused in a background tab). A couple of nudges cover the render.
         setTimeout(scheduleSweep, 200);
@@ -263,7 +267,7 @@ const ZSDomEngine = (() => {
       let unsettledSince = 0; // command-shaped reply whose read is not yet stable
       const WARMUP_MS = T.WARMUP_MS;
       const REASON_NOREPLY_MS = T.REASON_NOREPLY_MS;
-      const NO_TURN_GRACE_MS = 30000;
+      const NO_TURN_GRACE_MS = T.NO_TURN_GRACE_MS || 30000;
       // Upper bound on holding off a parse verdict while a provider reports its
       // read is unsettled (Qwen A/B dual turn still landing). A genuinely stuck
       // read still resolves after this and is parsed as-is.
@@ -347,7 +351,7 @@ const ZSDomEngine = (() => {
         // turn node changes (the PREVIOUS turn's content never counts).
         if (d.item !== curItem) { curItem = d.item; sawContent = false; warmSince = 0; lastGoodReply = ""; a2a.resetChunk(); }
         if ((d.reply && d.reply.length) || (d.thinking && d.thinking.length)) sawContent = true;
-        if (d.reply && d.reply.length) {
+        if (d.reply && d.reply.length && (!P.reliableCounts || newReply)) {
           lastGoodReply = d.reply;
           a2a.emitChunkIfDue(d.reply, Date.now());
         }
@@ -415,7 +419,7 @@ const ZSDomEngine = (() => {
         // is a mid-write gap, NOT a wedged stop button on a COMPLETE reply. Firing
         // here parsed the half-written JSON and stamped a false "bad JSON" error
         // while GLM was still typing. RESPONSE_TIMEOUT still bounds a truly stuck one.
-        const stuckDone = started && d.reply && Date.now() - lastChangeAt > STABLE_MS &&
+        const stuckDone = started && d.reply && (!P.reliableCounts || newReply) && Date.now() - lastChangeAt > STABLE_MS &&
           !(gen && ZSParse.hasOpenToolBlock(d.reply));
         if ((gen || effectiveBlock) && !stuckDone) {
           // DIAG: attribute this wait. genOffFirstAt set ⇒ we are PAST first stop,
@@ -453,6 +457,8 @@ const ZSDomEngine = (() => {
               base, gen, started, replyLen: (d.reply || "").length });
           }
           if (Date.now() - noTurnSince < NO_TURN_GRACE_MS) { await sleep(200); continue; }
+          diag("empty.why", { branch: "noTurnGrace", base, assistantCount: P.assistantCount ? P.assistantCount() : undefined });
+          return { kind: "empty" };
         } else {
           noTurnSince = 0;
           A._noTurnLoggedAt = 0;
@@ -673,6 +679,13 @@ const ZSDomEngine = (() => {
           }
           diag("empty.why", { branch: "finalBlank" });
           return { kind: "empty" };
+        }
+        if (r.length < 600 && P.scanError) {
+          const siteError = P.scanError() || "";
+          if (siteError) {
+            diag("text.siteError", { detail: siteError.slice(0, 160) });
+            return { kind: "context_limit", detail: siteError };
+          }
         }
         return { kind: "text", text: r };
       }

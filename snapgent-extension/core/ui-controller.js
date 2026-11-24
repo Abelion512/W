@@ -102,6 +102,17 @@ const ZSUiController = (() => {
     let root, bar, stateEl, actionBtn, stopBtn, targetSelect, targetWrap, switchBtn, menuEl, unstableEl;
     let targetBtn, targetMenuEl;
     let cover, coverRaf, barRaf, coverNow;
+    let themeObs = null, themeTimer = null, destroyed = false;
+    const disposers = [];
+    function track(target, type, fn, opts) {
+      if (!target || typeof target.addEventListener !== "function") return;
+      target.addEventListener(type, fn, opts);
+      disposers.push(() => {
+        if (target && typeof target.removeEventListener === "function") {
+          target.removeEventListener(type, fn, opts);
+        }
+      });
+    }
     let coverLockedH = 0, coverLockedEl = null, anchorLockedBh = 0;
     // placeBar runs every frame. Sampling computed styles and walking ancestors
     // on each frame is measurable work on a busy chat page, so cache the two
@@ -182,6 +193,9 @@ const ZSUiController = (() => {
       if (P.unstableWarning) {
         barNodes.push(domEl("button", { id: "zs-unstable", "aria-label": "Provider may be unstable", hidden: true, text: "⚠ unstable" }));
       }
+      // A re-injected controller must not leave a second bar behind.
+      const staleRoot = document.getElementById("zs-root");
+      if (staleRoot && staleRoot !== root && typeof staleRoot.remove === "function") staleRoot.remove();
       root.replaceChildren(...barNodes);
       document.documentElement.appendChild(root);
       bar = root.querySelector("#zs-bar");
@@ -227,7 +241,7 @@ const ZSUiController = (() => {
           requestAnimationFrame(targetTick);
         }
       });
-      document.addEventListener("click", (e) => {
+      track(document, "click", (e) => {
         if (targetMenuEl.hidden) return;
         if (!targetMenuEl.contains(e.target) && !targetBtn.contains(e.target)) targetMenuEl.hidden = true;
       }, true);
@@ -273,7 +287,7 @@ const ZSUiController = (() => {
       };
       switchBtn.addEventListener("click", (e) => { e.stopPropagation(); if (targetMenuEl) targetMenuEl.hidden = true; toggleMenu(false); });
       openMenuFn = (toSupport) => { if (menuEl.hidden) toggleMenu(toSupport); };
-      document.addEventListener("click", (e) => {
+      track(document, "click", (e) => {
         if (menuEl.hidden) return;
         if (!menuEl.contains(e.target) && !switchBtn.contains(e.target))
           menuEl.hidden = true;
@@ -282,19 +296,23 @@ const ZSUiController = (() => {
       applyTheme();
       // Event-driven theme tracking (replaces 2s setInterval polling).
       if (typeof MutationObserver === "function") {
-        let themeTimer = null;
         const scheduleTheme = () => {
-          if (themeTimer) return;
-          themeTimer = setTimeout(() => { themeTimer = null; applyTheme(); }, 150);
+          if (themeTimer || destroyed) return;
+          themeTimer = setTimeout(() => { themeTimer = null; if (!destroyed) applyTheme(); }, 150);
         };
-        const themeObs = new MutationObserver(scheduleTheme);
+        themeObs = new MutationObserver(scheduleTheme);
         const attrOpts = { attributes: true, attributeFilter: ["class", "style", "data-theme", "data-color-scheme", "data-mode"] };
         try { themeObs.observe(document.documentElement, attrOpts); } catch {}
         if (document.body) { try { themeObs.observe(document.body, attrOpts); } catch {} }
       }
       try {
         const mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
-        if (mq && mq.addEventListener) mq.addEventListener("change", applyTheme);
+        if (mq && mq.addEventListener) {
+          mq.addEventListener("change", applyTheme);
+          disposers.push(() => {
+            if (typeof mq.removeEventListener === "function") mq.removeEventListener("change", applyTheme);
+          });
+        }
       } catch {}
       renderBar();
       placeBar(); // start the per-frame anchoring loop
@@ -305,8 +323,8 @@ const ZSUiController = (() => {
         placeBarNow();
         if (cover && cover.dataset.on === "1" && coverNow) coverNow();
       };
-      window.addEventListener("resize", refreshGeometry);
-      document.addEventListener("visibilitychange", () => {
+      track(window, "resize", refreshGeometry);
+      track(document, "visibilitychange", () => {
         if (!document.hidden) refreshGeometry();
       });
     }
@@ -1673,6 +1691,7 @@ const ZSUiController = (() => {
     }
 
     function placeBar() {
+      if (destroyed) return;
       placeBarNow();
       barRaf = requestAnimationFrame(placeBar);
     }
@@ -1929,7 +1948,7 @@ const ZSUiController = (() => {
         if (P.coverTarget) cover.style.borderRadius = getComputedStyle(covNode).borderRadius;
       };
       const place = () => {
-        if (!cover || cover.dataset.on !== "1") return;
+        if (destroyed || !cover || cover.dataset.on !== "1") return;
         placeNow();
         coverRaf = requestAnimationFrame(place);
       };
@@ -2020,10 +2039,26 @@ const ZSUiController = (() => {
       const body = wrap.querySelector(".zs-shot-body");
       if (body) body.style.maxHeight = `${Math.max(120, Math.min(Math.round(vh * 0.42), room))}px`;
     }
-    window.addEventListener("resize", () => { if (shotNode && shotNode.isConnected) placeShot(shotNode); });
+    track(window, "resize", () => { if (shotNode && shotNode.isConnected) placeShot(shotNode); });
 
     build();
-    return { setStatus, setTarget, getTargetName, staleExtensionAlert, setStarted, setStarting, showStop, markStopping, inputCover, toast, banner, showImages, nudgeStart, updateStartGate, refreshSetup, getCustomPrompt, openMenu: (toSupport) => openMenuFn && openMenuFn(toSupport) };
+    function destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      for (const dispose of disposers.slice().reverse()) { try { dispose(); } catch {} }
+      if (themeObs) { try { themeObs.disconnect(); } catch {} themeObs = null; }
+      if (themeTimer) { clearTimeout(themeTimer); themeTimer = null; }
+      if (typeof cancelAnimationFrame === "function") {
+        if (barRaf) cancelAnimationFrame(barRaf);
+        if (coverRaf) cancelAnimationFrame(coverRaf);
+      }
+      barRaf = null;
+      coverRaf = null;
+      if (root && typeof root.remove === "function") root.remove();
+      try { document.documentElement.classList.remove(`zs-site-${P.id}`); } catch {}
+    }
+
+    return { setStatus, setTarget, getTargetName, staleExtensionAlert, setStarted, setStarting, showStop, markStopping, inputCover, toast, banner, showImages, nudgeStart, updateStartGate, refreshSetup, getCustomPrompt, destroy, openMenu: (toSupport) => openMenuFn && openMenuFn(toSupport) };
   }
 
   return { createUiController };

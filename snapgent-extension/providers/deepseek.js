@@ -623,10 +623,21 @@ const ZSProvider = (() => {
 
   // Click DeepSeek's primary footer button to send. Send arrow and stop square
   // are the SAME button, so we refuse to click whenever a generation is live.
+  // Live DeepSeek (2026-11) marks a disabled send button ONLY with the
+  // `ds-button--disabled` class: it is a <div>, so `disabled` is undefined and
+  // `aria-disabled` is absent. Checking aria-disabled alone clicked a dead
+  // button and skipped the Enter fallback, so the prompt sat in the composer.
+  function isDisabledBtn(btn) {
+    return !!btn && (btn.disabled === true ||
+      btn.getAttribute("aria-disabled") === "true" ||
+      !!(btn.classList && btn.classList.contains("ds-button--disabled")));
+  }
+  const sendReady = (btn) => !!btn && !isDisabledBtn(btn) && !isStopBtn(btn);
+
   function clickSendButton() {
     if (isBusyNow()) return false;
     const btn = document.querySelector(S.sendBtn);
-    if (btn && !isStopBtn(btn) && btn.getAttribute("aria-disabled") !== "true") {
+    if (sendReady(btn)) {
       btn.click();
       return true;
     }
@@ -672,23 +683,16 @@ const ZSProvider = (() => {
       try { await attachImages(images); } catch {}
       // Wait for the upload to make sending available, then click only once.
       // Repeated clicks after an ambiguous response can submit duplicate turns.
-      const ready = await waitFor(() => {
-        const btn = document.querySelector(S.sendBtn);
-        return !!btn && !btn.disabled && !isStopBtn(btn) &&
-          btn.getAttribute("aria-disabled") !== "true";
-      }, 25000);
+      const ready = await waitFor(() => sendReady(document.querySelector(S.sendBtn)), 25000);
       if (!ready) return;
       const btn = document.querySelector(S.sendBtn);
-      if (!btn || btn.disabled || isStopBtn(btn) || btn.getAttribute("aria-disabled") === "true") return;
+      if (!sendReady(btn)) return;
       btn.click();
       await waitFor(() => editorText().trim() === "" || isHardGenerating(), 5000);
       return;
     }
     // Text-only: wait for React to re-enable the send button, then click.
-    await waitFor(() => {
-      const btn = document.querySelector(S.sendBtn);
-      return btn && btn.getAttribute("aria-disabled") !== "true" && !isStopBtn(btn);
-    }, 800);
+    await waitFor(() => sendReady(document.querySelector(S.sendBtn)), 800);
     if (!clickSendButton() && !isBusyNow()) {
       pressEnter(editor);
     }
@@ -850,7 +854,7 @@ const ZSProvider = (() => {
           handlers.onNativeStop();
           return;
         }
-        if (btn.getAttribute("aria-disabled") === "true") return;
+        if (isDisabledBtn(btn)) return;
         if (handlers.isBlocked()) return;
         if (!handlers.isStarted()) {
           if (!chatIsEmpty()) return;
@@ -947,7 +951,7 @@ const ZSProvider = (() => {
       // Version beacon: stamp the loaded build onto <html> so a reload can be
       // confirmed from the page (read document.documentElement.dataset.zsDsVer).
       // BUMP DS_VER on meaningful deepseek.js changes worth verifying live.
-      try { document.documentElement.setAttribute("data-zs-ds-ver", "2026-09_unified-model"); } catch {}
+      try { document.documentElement.setAttribute("data-zs-ds-ver", "2026-11_disabled-class-send"); } catch {}
     },
     // turns
     allItems, isUserItem, isAssistantItem, itemText, classifyText,

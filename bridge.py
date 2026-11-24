@@ -109,6 +109,10 @@ ALLOWED_PROVIDER_KEYS = frozenset({
     "arena", "meta", "grok", "mistral", "rudder", "ptero", "manus", "default",
 })
 BIG_PAYLOAD_THREAD_BYTES = 256 * 1024
+# Cap a single incoming WebSocket frame so a client cannot make websockets
+# buffer an unbounded JSON string. Kept equal to the transport `max_size` in
+# run(); handle_client rejects at this boundary with a structured error.
+MAX_REQUEST_FRAME_BYTES = 16 * 1024 * 1024
 
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -501,6 +505,32 @@ def web_search_pii_violations(prompt: str, metadata: Optional[Dict[str, Any]] = 
     return [name for name, pattern in _PII_PATTERNS.items() if pattern.search(prompt)]
 
 
+def _write_server_config(server_id: str, remove: bool, request: Dict[str, Any]) -> None:
+    """Config read-modify-write on a worker thread; raises on invalid input."""
+    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
+    servers = config.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        raise RuntimeError("mcpServers must be a JSON object.")
+    if remove:
+        servers.pop(server_id, None)
+    else:
+        command = request.get("command")
+        args = request.get("args", [])
+        env = request.get("env", {})
+        if not isinstance(command, str) or not command.strip():
+            raise RuntimeError("MCP server command is required.")
+        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+            raise RuntimeError("MCP server args must be an array of strings.")
+        if not isinstance(env, dict) or not all(isinstance(k, str) for k in env):
+            raise RuntimeError("MCP server env must be an object.")
+        servers[server_id] = {"command": command, "args": args, "env": env}
+    # Unique temp name per write: a leftover temp from a crash must not block
+    # every later add_server, and concurrent writes must not share a temp file.
+    temp_path = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    temp_path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temp_path.replace(CONFIG_PATH)
+
+
 class Bridge:
     def __init__(
         self,
@@ -519,6 +549,8 @@ class Bridge:
         self._disconnect_grace: float = max(0.0, float(disconnect_grace))
         self._reject_log: Dict[str, Tuple[float, int]] = {}
         self._rotate_lock = asyncio.Lock()
+        # Serializes config read-modify-write now that it runs in a worker thread.
+        self._config_lock = asyncio.Lock()
         self._audit = audit_log if audit_log is not None else activity_audit.get_audit_log()
         # A2A delegation. Fan-out: one lock PER PROVIDER, so tasks pinned to
         # different chat tabs can run at the same time while two tasks for the
@@ -593,7 +625,7 @@ class Bridge:
         }
 
     async def start_servers(self) -> None:
-        config = self.load_config()
+        config = await asyncio.to_thread(self.load_config)
         self.servers = {
             server_id: MCPServer(server_id, server_config)
             for server_id, server_config in config.items()
@@ -1146,6 +1178,41 @@ class Bridge:
                 future.set_result({"ok": False, "error": str(request.get("error") or "The web AI failed.")})
         await self._send_client(websocket, {"type": "prompt_ack", "id": request.get("id")})
 
+    async def _finalize_client(self, websocket: Any, origin: Optional[str]) -> None:
+        """Drop every trace of a departing socket, even if its handler is cancelled."""
+        self._client_token_auth.pop(websocket, None)
+        async with self._client_lock:
+            self.clients.discard(websocket)
+            remaining = bool(self.clients)
+        # Fail prompts owned by the departing socket, optionally waiting
+        # through a short reconnect grace window so MV3 worker restarts in
+        # long sessions do not abort live browser generations.
+        owns_prompts = any(owner is websocket for owner in self._prompt_owners.values())
+        self._audit.record(
+            "bridge.extension_disconnected",
+            origin=activity_audit.sanitize_text(origin, 160),
+            owns_prompts=owns_prompts,
+            grace_seconds=self._disconnect_grace if (owns_prompts and self._disconnect_grace > 0) else 0,
+        )
+        if owns_prompts:
+            if self._disconnect_grace > 0:
+                loop = asyncio.get_running_loop()
+                self._disconnect_timers[websocket] = loop.call_later(
+                    self._disconnect_grace,
+                    self._fail_pending_prompts,
+                    "The extension disconnected.",
+                    websocket,
+                )
+                log(f"extension disconnected; holding prompt(s) for {self._disconnect_grace:.0f}s reconnect grace")
+            else:
+                self._fail_pending_prompts("The extension disconnected.", owner=websocket)
+                log("extension disconnected")
+        elif not remaining and not self._disconnect_timers:
+            self._fail_pending_prompts("The extension disconnected.")
+            log("extension disconnected")
+        else:
+            log("extension disconnected")
+
     async def handle_client(self, websocket: Any, _path: Optional[str] = None) -> None:
         origin = header_value(websocket, "Origin")
         host = header_value(websocket, "Host")
@@ -1227,12 +1294,19 @@ class Bridge:
 
         try:
             async for raw in websocket:
+                if len(raw) > MAX_REQUEST_FRAME_BYTES:
+                    await self._send_client(
+                        websocket, {"type": "error", "error": "Request payload too large."}
+                    )
+                    continue
                 try:
                     if len(raw) > BIG_PAYLOAD_THREAD_BYTES:
                         request = await asyncio.to_thread(json.loads, raw)
                     else:
                         request = json.loads(raw)
-                except (TypeError, json.JSONDecodeError):
+                except (TypeError, ValueError, RecursionError):
+                    # ValueError covers both JSONDecodeError (bad JSON) and
+                    # UnicodeDecodeError (binary frame with invalid UTF-8).
                     await self._send_client(websocket, {"type": "error", "error": "Invalid JSON request."})
                     continue
                 if not isinstance(request, dict):
@@ -1250,40 +1324,11 @@ class Bridge:
         finally:
             for task in list(pending):
                 task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-            self._client_token_auth.pop(websocket, None)
-            async with self._client_lock:
-                self.clients.discard(websocket)
-                remaining = bool(self.clients)
-            # Fail prompts owned by the departing socket, optionally waiting
-            # through a short reconnect grace window so MV3 worker restarts in
-            # long sessions do not abort live browser generations.
-            owns_prompts = any(owner is websocket for owner in self._prompt_owners.values())
-            self._audit.record(
-                "bridge.extension_disconnected",
-                origin=activity_audit.sanitize_text(origin, 160),
-                owns_prompts=owns_prompts,
-                grace_seconds=self._disconnect_grace if (owns_prompts and self._disconnect_grace > 0) else 0,
-            )
-            if owns_prompts:
-                if self._disconnect_grace > 0:
-                    loop = asyncio.get_running_loop()
-                    self._disconnect_timers[websocket] = loop.call_later(
-                        self._disconnect_grace,
-                        self._fail_pending_prompts,
-                        "The extension disconnected.",
-                        websocket,
-                    )
-                    log(f"extension disconnected; holding prompt(s) for {self._disconnect_grace:.0f}s reconnect grace")
-                else:
-                    self._fail_pending_prompts("The extension disconnected.", owner=websocket)
-                    log("extension disconnected")
-            elif not remaining and not self._disconnect_timers:
-                self._fail_pending_prompts("The extension disconnected.")
-                log("extension disconnected")
-            else:
-                log("extension disconnected")
+            try:
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+            finally:
+                await self._finalize_client(websocket, origin)
 
     async def _handle_request(self, websocket: Any, request: Dict[str, Any]) -> None:
         request_id = request.get("id")
@@ -1599,30 +1644,8 @@ class Bridge:
             )
             return
         try:
-            config = json.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
-            servers = config.setdefault("mcpServers", {})
-            if not isinstance(servers, dict):
-                raise RuntimeError("mcpServers must be a JSON object.")
-            if remove:
-                servers.pop(server_id, None)
-            else:
-                command = request.get("command")
-                args = request.get("args", [])
-                env = request.get("env", {})
-                if not isinstance(command, str) or not command.strip():
-                    raise RuntimeError("MCP server command is required.")
-                if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
-                    raise RuntimeError("MCP server args must be an array of strings.")
-                if not isinstance(env, dict) or not all(isinstance(k, str) for k in env):
-                    raise RuntimeError("MCP server env must be an object.")
-                servers[server_id] = {"command": command, "args": args, "env": env}
-            # Unique temp name per write: two tabs firing add_server at once
-            # must not interleave into the same temp file.
-            temp_path = CONFIG_PATH.with_name(
-                f"{CONFIG_PATH.name}.{os.getpid()}.{time.time_ns()}.tmp"
-            )
-            temp_path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            temp_path.replace(CONFIG_PATH)
+            async with self._config_lock:
+                await asyncio.to_thread(_write_server_config, server_id, remove, request)
             await self.stop_servers()
             await self.start_servers()
             await self._send_client(
@@ -1733,8 +1756,8 @@ async def run() -> None:
         HOST,
         PORT,
         origins=allowed_origins,
-        max_size=128 * 1024 * 1024,
-        max_queue=256,
+        max_size=MAX_REQUEST_FRAME_BYTES,
+        max_queue=32,
         ping_interval=20,
         ping_timeout=90,
     )

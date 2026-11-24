@@ -33,6 +33,11 @@ function check(name, cond, detail) {
   const ZSA2ARunner = loadCoreGlobal("a2a-runner.js", "ZSA2ARunner");
   const ZSDomEngine = loadCoreGlobal("dom-engine.js", "ZSDomEngine");
   const ZSUiController = loadCoreGlobal("ui-controller.js", "ZSUiController");
+  const ZS = loadCoreGlobal("config.js", "ZS");
+
+  const repoPrompt = ZS.buildSystemPrompt({ siteName: "Gemini", targetServer: "repo", targetName: "repo" });
+  check("buildSystemPrompt prepends SYS_MARKER for non-Roblox targets",
+    repoPrompt.startsWith(ZS.SYS_MARKER + "\n"), repoPrompt.slice(0, 60));
 
   // ── ZSChannel ────────────────────────────────────────────────────────────
   check("channel detects Extension context invalidated", ZSChannel.isContextInvalidated("Extension context invalidated."));
@@ -73,16 +78,19 @@ function check(name, cond, detail) {
   ZSChannel.listenRuntimeMessages({
     onStatus: (s) => { routed.status = s.connected; },
     onOpenMenu: (atBottom) => { routed.openMenu = atBottom; },
-    onA2APrompt: (p, id) => { routed.prompt = `${id}:${p}`; },
+    onA2APrompt: (p, id, opts) => { routed.prompt = `${id}:${p}`; routed.opts = opts; },
     onA2AAbort: (id) => { routed.abort = id; },
   }, {
     onMessage: { addListener: (fn) => { registeredListener = fn; } },
   });
   registeredListener({ type: "zs-status", connected: true });
   registeredListener({ type: "zs-open-menu" });
-  registeredListener({ type: "zs-a2a-prompt", prompt: "hi", promptId: "p1" });
+  registeredListener({ type: "zs-a2a-prompt", prompt: "hi", promptId: "p1", mode: { model: "4 Neon", thinking: "High" }, route: "pinned" });
   registeredListener({ type: "zs-a2a-abort", promptId: "p1" });
   check("runtime listener routes all message types", routed.status === true && routed.openMenu === false && routed.prompt === "p1:hi" && routed.abort === "p1", routed);
+  check("runtime listener forwards mode opts on zs-a2a-prompt",
+    !!(routed.opts && routed.opts.mode && routed.opts.mode.model === "4 Neon" && routed.opts.route === "pinned"),
+    routed.opts);
 
   // ── ZSA2ARunner ──────────────────────────────────────────────────────────
   check("cleanA2AText strips Thinking process header", ZSA2ARunner.cleanA2AText("\nThinking process\nPONG") === "PONG");
@@ -171,6 +179,166 @@ function check(name, cond, detail) {
     !!(capRes && capRes.ok === false && /hard cap/i.test(capRes.error || "") && !/caller stopped waiting/i.test(capRes.error || "")),
     capRes);
 
+  let receivedStartMode = null;
+  const modeState = { running: false, starting: false, injecting: false, started: false, stop: false };
+  const modeRunner = ZSA2ARunner.createRunner({
+    provider: {
+      chatIsEmpty: () => true,
+      isFreshChat: () => true,
+      getEditor: () => ({}),
+      stopGeneration: () => {},
+      lastAssistant: () => ({ text: "OK" }),
+      itemText: (it) => it.text,
+    },
+    state: modeState,
+    sleep: () => Promise.resolve(),
+    diag: () => {},
+    startSession: async (opts) => { receivedStartMode = opts; modeState.started = true; },
+    submitAndGetBase: async () => 0,
+    agentLoop: async () => "OK",
+    sendRuntimeMessage: () => {},
+  });
+  await modeRunner.runPrompt("ping", "req-mode", { mode: { model: "4 Neon", thinking: "Medium" } });
+  check("a2a runner forwards mode opts to startSession",
+    !!(receivedStartMode && receivedStartMode.model === "4 Neon" && receivedStartMode.thinking === "Medium"),
+    receivedStartMode);
+
+  // 1. Abort during submitAndGetBase must never invoke agentLoop and must clear state.stop
+  const abortSendMsgs = [];
+  const abortSendState = { running: false, starting: false, injecting: false, started: true, stop: false };
+  let abortSendLoopCalls = 0;
+  let abortSendRunner;
+  abortSendRunner = ZSA2ARunner.createRunner({
+    provider: {
+      chatIsEmpty: () => false,
+      stopGeneration: () => {},
+      lastAssistant: () => ({ text: "AFTER_ABORT_OK" }),
+      itemText: (it) => it.text,
+    },
+    state: abortSendState,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    diag: () => {},
+    startSession: async () => {},
+    submitAndGetBase: async (prompt) => {
+      if (prompt === "abort-me") abortSendRunner.abortIfMatches("req-abort-send", "bridge-cancel");
+      return 0;
+    },
+    agentLoop: async () => { abortSendLoopCalls++; return "AFTER_ABORT_OK"; },
+    sendRuntimeMessage: (m) => abortSendMsgs.push(m),
+  });
+  await abortSendRunner.runPrompt("abort-me", "req-abort-send");
+  const abortedSendRes = abortSendMsgs.find((m) => m.type === "a2a_result" && m.promptId === "req-abort-send");
+  await abortSendRunner.runPrompt("ok", "req-after-abort");
+  const afterAbortRes = abortSendMsgs.find((m) => m.type === "a2a_result" && m.promptId === "req-after-abort");
+  check("abort during submitAndGetBase never calls agentLoop, clears stop, and allows follow-up",
+    abortSendLoopCalls === 1 &&
+    !!(abortedSendRes && abortedSendRes.ok === false && /cancelled/i.test(abortedSendRes.error || "")) &&
+    abortSendState.stop === false &&
+    !!(afterAbortRes && afterAbortRes.ok === true && afterAbortRes.text === "AFTER_ABORT_OK"),
+    { abortSendLoopCalls, abortedSendRes, stop: abortSendState.stop, afterAbortRes });
+
+  // 2. Rejected concurrent runPrompt must not disturb in-flight task cancellation
+  const concMsgs = [];
+  const concState = { running: false, starting: false, injecting: false, started: true, stop: false };
+  const concRunner = ZSA2ARunner.createRunner({
+    provider: {
+      chatIsEmpty: () => false,
+      stopGeneration: () => {},
+      lastAssistant: () => ({ text: "CONC_DONE" }),
+      itemText: (it) => it.text,
+    },
+    state: concState,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    diag: () => {},
+    startSession: async () => {},
+    submitAndGetBase: async () => 0,
+    agentLoop: async () => {
+      concState.running = true;
+      try { await new Promise((r) => setTimeout(r, 60)); return "CONC_DONE"; }
+      finally { concState.running = false; }
+    },
+    sendRuntimeMessage: (m) => concMsgs.push(m),
+  });
+  const concP1 = concRunner.runPrompt("first", "req-conc-1");
+  await new Promise((r) => setTimeout(r, 10));
+  const concP2 = concRunner.runPrompt("bump", "req-conc-2");
+  await new Promise((r) => setTimeout(r, 10));
+  concRunner.abortIfMatches("req-conc-1", "bridge-cancel");
+  await Promise.all([concP1, concP2]);
+  const concR1 = concMsgs.find((m) => m.type === "a2a_result" && m.promptId === "req-conc-1");
+  const concR2 = concMsgs.find((m) => m.type === "a2a_result" && m.promptId === "req-conc-2");
+  check("rejected concurrent runPrompt preserves in-flight abort outcome",
+    !!(concR2 && concR2.ok === false && /already working/i.test(concR2.error || "")) &&
+    !!(concR1 && concR1.ok === false && /cancelled/i.test(concR1.error || "")),
+    { concR1, concR2 });
+
+  // 3. Immediate follow-up runPrompt right after abortIfMatches waits for unwind and succeeds
+  const unwindMsgs = [];
+  const unwindState = { running: false, starting: false, injecting: false, started: true, stop: false };
+  let unwindRunner;
+  unwindRunner = ZSA2ARunner.createRunner({
+    provider: {
+      chatIsEmpty: () => false,
+      stopGeneration: () => {},
+      lastAssistant: () => ({ text: "UNWIND_OK" }),
+      itemText: (it) => it.text,
+    },
+    state: unwindState,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    diag: () => {},
+    startSession: async () => {},
+    submitAndGetBase: async (prompt) => {
+      if (prompt === "slow-send") {
+        unwindState.injecting = true;
+        await new Promise((r) => setTimeout(r, 60));
+        unwindState.injecting = false;
+      }
+      return 0;
+    },
+    agentLoop: async () => "UNWIND_OK",
+    sendRuntimeMessage: (m) => unwindMsgs.push(m),
+  });
+  const uP1 = unwindRunner.runPrompt("slow-send", "req-unwind-1");
+  await new Promise((r) => setTimeout(r, 10));
+  unwindRunner.abortIfMatches("req-unwind-1", "bridge-cancel");
+  await new Promise((r) => setTimeout(r, 5));
+  const uP2 = unwindRunner.runPrompt("next", "req-unwind-2");
+  await Promise.all([uP1, uP2]);
+  const uR1 = unwindMsgs.find((m) => m.type === "a2a_result" && m.promptId === "req-unwind-1");
+  const uR2 = unwindMsgs.find((m) => m.type === "a2a_result" && m.promptId === "req-unwind-2");
+  check("follow-up runPrompt right after abortIfMatches waits for unwind and succeeds",
+    !!(uR1 && uR1.ok === false && /cancelled/i.test(uR1.error || "")) &&
+    !!(uR2 && uR2.ok === true && uR2.text === "UNWIND_OK"),
+    { uR1, uR2 });
+
+  // 4. Stale started=true after SPA New Chat syncs before checking !A.started
+  const staleMsgs = [];
+  const staleState = { running: false, starting: false, injecting: false, started: true, stop: false };
+  let staleStartCalls = 0;
+  const staleRunner = ZSA2ARunner.createRunner({
+    provider: {
+      chatIsEmpty: () => true,
+      isFreshChat: () => true,
+      getEditor: () => ({}),
+      stopGeneration: () => {},
+      lastAssistant: () => ({ text: "STALE_NEWCHAT_OK" }),
+      itemText: (it) => it.text,
+    },
+    state: staleState,
+    syncSessionState: () => { staleState.started = false; },
+    sleep: () => Promise.resolve(),
+    diag: () => {},
+    startSession: async () => { staleStartCalls++; staleState.started = true; },
+    submitAndGetBase: async () => 0,
+    agentLoop: async () => "STALE_NEWCHAT_OK",
+    sendRuntimeMessage: (m) => staleMsgs.push(m),
+  });
+  await staleRunner.runPrompt("use tool", "req-stale-newchat");
+  const staleRes = staleMsgs.find((m) => m.type === "a2a_result" && m.promptId === "req-stale-newchat");
+  check("runPrompt syncs session state so stale started=true triggers startSession on fresh chat",
+    staleStartCalls === 1 && !!(staleRes && staleRes.ok === true && staleRes.text === "STALE_NEWCHAT_OK"),
+    { staleStartCalls, staleRes });
+
   // ── ZSDomEngine ──────────────────────────────────────────────────────────
   const domState = { sendToken: null };
   const domEngine = ZSDomEngine.createDomEngine({
@@ -194,6 +362,73 @@ function check(name, cond, detail) {
   let flips = 0;
   const waited = await domEngine.waitFor(() => ++flips >= 3, 500);
   check("domEngine.waitFor resolves true once predicate holds", waited === true && flips === 3, { waited, flips });
+
+  // 5. ZSDomEngine.submitAndGetBase bails on A.stop without calling typeAndSend and clears A.injecting immediately
+  let stopTypeCalls = 0;
+  const stopDomState = { running: false, starting: false, injecting: false, started: true, stop: true, sendToken: null };
+  const stopDomEngine = ZSDomEngine.createDomEngine({
+    provider: {
+      timings: {},
+      lastAssistantId: () => "t0",
+      isBusyNow: () => false,
+      lastAssistant: () => null,
+      streamLen: () => 0,
+      isGenerating: () => false,
+      assistantCount: () => 2,
+      userCount: () => 1,
+      editorText: () => "",
+      typeAndSend: async () => { stopTypeCalls++; },
+    },
+    state: stopDomState,
+    a2a: { getCurrentId: () => "req-stop-dom", resetChunk: () => {}, emitChunkIfDue: () => {} },
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    diag: () => {},
+    log: () => {},
+    getUi: () => ({ inputCover: () => {}, banner: () => {} }),
+    jitterBeforeSend: () => Promise.resolve(),
+    backgroundSessionsReady: async () => false,
+    scrollSuppressed: () => false,
+    bareToolName: (n) => n,
+    knownTool: () => false,
+    preHideWholeItems: () => {},
+    scheduleSweep: () => {},
+  });
+  const stopBase1 = await stopDomEngine.submitAndGetBase("hi");
+  const injectingImmediate1 = stopDomState.injecting;
+  stopDomState.stop = false;
+  const flipDomEngine = ZSDomEngine.createDomEngine({
+    provider: {
+      timings: {},
+      lastAssistantId: () => "t0",
+      isBusyNow: () => false,
+      lastAssistant: () => null,
+      streamLen: () => 0,
+      isGenerating: () => false,
+      assistantCount: () => 3,
+      userCount: () => 1,
+      editorText: () => "",
+      typeAndSend: async () => { stopTypeCalls++; },
+    },
+    state: stopDomState,
+    a2a: { getCurrentId: () => "req-stop-dom-flip", resetChunk: () => {}, emitChunkIfDue: () => {} },
+    sleep: async () => { stopDomState.stop = true; },
+    diag: () => {},
+    log: () => {},
+    getUi: () => ({ inputCover: () => {}, banner: () => {} }),
+    jitterBeforeSend: () => Promise.resolve(),
+    backgroundSessionsReady: async () => false,
+    scrollSuppressed: () => false,
+    bareToolName: (n) => n,
+    knownTool: () => false,
+    preHideWholeItems: () => {},
+    scheduleSweep: () => {},
+  });
+  const stopBase2 = await flipDomEngine.submitAndGetBase("hi-flip");
+  const injectingImmediate2 = stopDomState.injecting;
+  check("submitAndGetBase bails on A.stop without calling typeAndSend and clears A.injecting immediately",
+    stopTypeCalls === 0 && stopBase1 === 2 && stopBase2 === 3 &&
+    injectingImmediate1 === false && injectingImmediate2 === false,
+    { stopTypeCalls, stopBase1, stopBase2, injectingImmediate1, injectingImmediate2 });
 
   // ── Hidden-tab A2A: must never park or time out when document.hidden=true ─
   const ZSParse = loadCoreGlobal("parser.js", "ZSParse");
@@ -501,6 +736,194 @@ function check(name, cond, detail) {
     });
   });
   check("manifest loads all 4 extracted core modules before core/main.js", allLoadedBeforeMain, mainEntries.length);
+
+  // ── Site errors must never report A2A ok:true or miss fast scanError ───
+  const errProvider = {
+    timings: { RESPONSE_TIMEOUT_MS: 3000, STABLE_MS: 800, WARMUP_MS: 800, REASON_NOREPLY_MS: 800 },
+    reliableCounts: true,
+    chatIsEmpty: () => false,
+    isBusyNow: () => false,
+    isGenerating: () => false,
+    assistantCount: () => 2,
+    lastAssistant: () => ({ id: "err-2" }),
+    lastAssistantId: () => "err-2",
+    streamLen: () => 0,
+    readAssistant: () => ({ present: true, reply: "Error: AI request failed.", thinking: "", item: { id: "err-2" } }),
+    itemText: () => "Error: AI request failed.",
+    scanError: () => "Error: AI request failed.",
+    isTooLongMsg: () => false,
+    turnHalted: () => false,
+    findContinueBtn: () => null,
+    stopGeneration: () => {},
+  };
+  const errEngine = ZSDomEngineHidden.createDomEngine({
+    provider: errProvider,
+    timings: errProvider.timings,
+    state: { sendToken: "err-1", toolNames: new Set(), stop: false },
+    a2a: { getCurrentId: () => "err-rpc", resetChunk: () => {}, emitChunkIfDue: () => {} },
+    sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))),
+    diag: () => {},
+    log: () => {},
+    getUi: () => ({ inputCover: () => {}, setStarting: () => {}, banner: () => {} }),
+    jitterBeforeSend: () => Promise.resolve(),
+    backgroundSessionsReady: async () => false,
+    scrollSuppressed: () => false,
+    bareToolName: (n) => n,
+    knownTool: () => false,
+    preHideWholeItems: () => {},
+    scheduleSweep: () => {},
+  });
+  const errRes = await errEngine.waitForResponse(1);
+  check("domEngine.waitForResponse runs final scanError before returning short text",
+    errRes && errRes.kind === "context_limit" && errRes.detail === "Error: AI request failed.",
+    errRes);
+
+  const errMsgs = [];
+  const errState = { running: false, starting: false, injecting: false, started: true, stop: false, lastLoopError: "" };
+  const errRunner = ZSA2ARunner.createRunner({
+    provider: {
+      chatIsEmpty: () => false,
+      stopGeneration: () => {},
+      lastAssistant: () => ({ text: "Error: AI request failed." }),
+      itemText: (it) => it.text,
+    },
+    state: errState,
+    sleep: () => Promise.resolve(),
+    diag: () => {},
+    startSession: async () => {},
+    submitAndGetBase: async () => 1,
+    agentLoop: async () => { errState.lastLoopError = "Error: AI request failed."; return ""; },
+    sendRuntimeMessage: (m) => errMsgs.push(m),
+  });
+  await errRunner.runPrompt("check", "req-err-1");
+  const errReply = errMsgs.find((m) => m.type === "a2a_result" && m.promptId === "req-err-1");
+  check("a2a-runner fails with A.lastLoopError instead of returning ok:true error prose",
+    !!(errReply && errReply.ok === false && errReply.error === "Error: AI request failed."),
+    errReply);
+
+  // ── noTurnGrace must not finalize on old turn or emit old-turn chunks ───
+  let ntgTicks = 0;
+  const ntgChunks = [];
+  const ntgProvider = {
+    timings: { RESPONSE_TIMEOUT_MS: 3000, STABLE_MS: 40, WARMUP_MS: 80, REASON_NOREPLY_MS: 80, NO_TURN_GRACE_MS: 90 },
+    reliableCounts: true,
+    chatIsEmpty: () => false,
+    isBusyNow: () => false,
+    isGenerating: () => (++ntgTicks <= 3),
+    assistantCount: () => 1,
+    lastAssistant: () => ({ id: "old-1" }),
+    lastAssistantId: () => "old-1",
+    streamLen: () => 40,
+    readAssistant: () => ({ present: true, reply: '```json\n{"command":"list_commands"}\n```', thinking: "", item: { id: "old-1" } }),
+    itemText: () => '```json\n{"command":"list_commands"}\n```',
+    scanError: () => null,
+    isTooLongMsg: () => false,
+    turnHalted: () => false,
+    findContinueBtn: () => null,
+    stopGeneration: () => {},
+  };
+  const ntgEngine = ZSDomEngineHidden.createDomEngine({
+    provider: ntgProvider,
+    timings: ntgProvider.timings,
+    state: { sendToken: "old-1", toolNames: new Set(), stop: false },
+    a2a: { getCurrentId: () => "ntg-rpc", resetChunk: () => {}, emitChunkIfDue: (t) => ntgChunks.push(t) },
+    sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 15))),
+    diag: () => {},
+    log: () => {},
+    getUi: () => ({ inputCover: () => {}, setStarting: () => {}, banner: () => {} }),
+    jitterBeforeSend: () => Promise.resolve(),
+    backgroundSessionsReady: async () => false,
+    scrollSuppressed: () => false,
+    bareToolName: (n) => n,
+    knownTool: () => false,
+    preHideWholeItems: () => {},
+    scheduleSweep: () => {},
+  });
+  const ntgRes = await ntgEngine.waitForResponse(1);
+  check("waitForResponse with reliableCounts and !newReply returns empty instead of old tool block or chunk",
+    ntgRes && ntgRes.kind === "empty" && ntgChunks.length === 0,
+    { ntgRes, ntgChunks });
+
+  // ── A2A start retry: opens fresh chat on transient fail, skips fatal ────
+  const origDoc = global.document;
+  try {
+    let transEmpty = true;
+    let transStartCalls = 0;
+    let transNewClicks = 0;
+    const transMsgs = [];
+    const transState = { running: false, starting: false, injecting: false, started: false, stop: false, lastStartFailure: "" };
+    const newChatBtn = {
+      hidden: false,
+      innerText: "New chat",
+      getAttribute: () => "New chat",
+      closest: () => null,
+      getClientRects: () => [{ width: 40, height: 24 }],
+      click: () => { transNewClicks++; transEmpty = true; },
+    };
+    const transRunner = ZSA2ARunner.createRunner({
+      doc: { querySelectorAll: () => (transEmpty ? [] : [newChatBtn]) },
+      provider: {
+        chatIsEmpty: () => transEmpty,
+        isFreshChat: () => transEmpty,
+        getEditor: () => ({}),
+        stopGeneration: () => {},
+        lastAssistant: () => ({ text: "TRANS_OK" }),
+        itemText: (it) => it.text,
+      },
+      state: transState,
+      sleep: () => Promise.resolve(),
+      diag: () => {},
+      startSession: async () => {
+        transStartCalls++;
+        if (transStartCalls === 1) {
+          transEmpty = false;
+          transState.lastStartFailure = "model answered in prose without a command block";
+          return;
+        }
+        transState.started = true;
+      },
+      submitAndGetBase: async () => 0,
+      agentLoop: async () => "TRANS_OK",
+      sendRuntimeMessage: (m) => transMsgs.push(m),
+    });
+    await transRunner.runPrompt("hi", "req-trans-retry");
+    const transRes = transMsgs.find((m) => m.type === "a2a_result" && m.promptId === "req-trans-retry");
+    check("a2a-runner Attempt 2 opens fresh chat after transient start failure",
+      transStartCalls === 2 && transNewClicks === 1 && !!(transRes && transRes.ok === true && transRes.text === "TRANS_OK"),
+      { transStartCalls, transNewClicks, transRes });
+
+    let fatalStartCalls = 0;
+    const fatalMsgs = [];
+    const fatalState = { running: false, starting: false, injecting: false, started: false, stop: false, lastStartFailure: "" };
+    const fatalRunner = ZSA2ARunner.createRunner({
+      doc: { querySelectorAll: () => [] },
+      provider: {
+        chatIsEmpty: () => true,
+        isFreshChat: () => true,
+        getEditor: () => ({}),
+        stopGeneration: () => {},
+        lastAssistant: () => null,
+        itemText: () => "",
+      },
+      state: fatalState,
+      sleep: () => Promise.resolve(),
+      diag: () => {},
+      startSession: async () => {
+        fatalStartCalls++;
+        fatalState.lastStartFailure = "Error: Rate limited by provider";
+      },
+      submitAndGetBase: async () => 0,
+      agentLoop: async () => "",
+      sendRuntimeMessage: (m) => fatalMsgs.push(m),
+    });
+    await fatalRunner.runPrompt("hi", "req-fatal-no-retry");
+    const fatalRes = fatalMsgs.find((m) => m.type === "a2a_result" && m.promptId === "req-fatal-no-retry");
+    check("a2a-runner skips Attempt 2 on fatal site/quota start failure",
+      fatalStartCalls === 1 && !!(fatalRes && fatalRes.ok === false && /Rate limited by provider/i.test(fatalRes.error || "")),
+      { fatalStartCalls, fatalRes });
+  } finally {
+    global.document = origDoc;
+  }
 
   console.log(`\n${passed}/${passed + failed} checks passed`);
   process.exit(failed ? 1 : 0);
