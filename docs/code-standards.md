@@ -109,11 +109,12 @@ Rules:
 - **Line length ~100, not 79/80.** The 30-tool catalog is written as
   one `_tool(...)` per line for scanability; PEP 8 itself says
   consistency within a module wins. New code should stay ≤100.
-- **Large files exist.** `core/main.js` (~4.8k lines) is the known
-  decomposition candidate; `bridge.py` (~850) and `workspace_mcp.py`
-  (~700) are next. Per the review skill, a change that materially
-  grows a large file should extract helpers first. Do not add new
-  subsystems to `main.js` — put them in `core/` or a provider.
+- **Large files exist.** `core/main.js` (~3.4k lines) is the known
+  decomposition candidate; `bridge.py` (~1.9k), `workspace_mcp.py`
+  (~1.3k) and `core/ui-controller.js` (~2.1k) are next. Per the review
+  skill, a change that materially grows a large file should extract
+  helpers first. Do not add new subsystems to `main.js` — put them in
+  `core/` or a provider.
 - **Runtime deps: stdlib + `websockets` only.** The pin lives in
   `requirements.txt`; `pyproject.toml` carries pytest config only. CI
   installs test deps explicitly. Adding a dependency needs a stated reason
@@ -132,4 +133,4 @@ Rules:
 | Static checks | **Fixed this change** | pyflakes found 1 unused import (`test_bridge.py: asyncio`) — removed; pyflakes now clean and in CI |
 | Formatting enforcement | **Added this change** | `.editorconfig` + `pyproject.toml` (pytest config) added; previously none |
 | Dead code | Pass (after popup fix) | `serverLines`/`fmtUptime`/`fmtRss` were added but unused mid-task; wired into `render()` and covered by `test-popup-status.js` |
-| Tests | Pass | 157 pytest (16 audit regressions) + 9 Node stub-DOM suites + 8 desktop world-isolation checks + 26 live e2e checks, all in CI; full detail in `docs/audit-2026-11-20.md` |
+| Tests | Pass | 157 pytest (16 audit regressions) + the Node stub-DOM suites listed in CI + 8 desktop world-isolation checks + 26 live e2e checks, all in CI; full detail in `docs/audit-2026-11-20.md` |

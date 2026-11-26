@@ -73,10 +73,11 @@ const internals = new Function( // NOSONAR test only: own local background.js re
   "WebSocket",
   "ZSGuard",
   "ZSPairing",
-  src + "\n; return { send, failAllPending, pending, routeFor, markProviderLimited, isProviderLimited, setConnected: (v) => { connected = v; }, setWs: (w) => { ws = w; } };"
+  src + "\n; return { send, failAllPending, pending, routeFor, markProviderLimited, isProviderLimited, limitCooldownMs, setConnected: (v) => { connected = v; }, setWs: (w) => { ws = w; } };"
 )(global.chrome, global.WebSocket, ZSGuard, ZSPairing);
 
-const { send, failAllPending, pending, routeFor, markProviderLimited, isProviderLimited } = internals;
+const { send, failAllPending, pending, routeFor, markProviderLimited, isProviderLimited,
+  limitCooldownMs } = internals;
 
 (async () => {
   // ── 1. Nothing connected: the request never left ─────────────────────────
@@ -127,6 +128,12 @@ const { send, failAllPending, pending, routeFor, markProviderLimited, isProvider
   {
     ok("a plain error does not mark a provider limited",
       markProviderLimited("deepseek", "bridge offline") === false);
+    ok("a stated seconds cooldown is honoured",
+      limitCooldownMs("Rate limit reached. You can send your next request in 31 s.") === 31000);
+    ok("a stated minutes cooldown is honoured",
+      limitCooldownMs("try again in 2 minutes") === 120000);
+    ok("a cooldown with no stated time defaults to one hour",
+      limitCooldownMs("quota exceeded") === 60 * 60 * 1000);
     ok("a rate-limit error marks the provider limited",
       markProviderLimited("deepseek", "429 Too Many Requests") === true);
     ok("limited provider is flagged",

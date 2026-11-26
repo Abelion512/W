@@ -38,6 +38,16 @@ function check(name, cond, detail) {
   const repoPrompt = ZS.buildSystemPrompt({ siteName: "Gemini", targetServer: "repo", targetName: "repo" });
   check("buildSystemPrompt prepends SYS_MARKER for non-Roblox targets",
     repoPrompt.startsWith(ZS.SYS_MARKER + "\n"), repoPrompt.slice(0, 60));
+  const compactPrompt = ZS.buildSystemPrompt({ siteName: "Rudder", targetServer: "roblox", targetName: "Studio", compact: true });
+  check("plain-voice directive reaches full and compact prompts",
+    repoPrompt.includes("Write short, plain sentences.") && compactPrompt.includes("Write short, plain sentences."));
+  check("parseRetryAfterMs reads seconds and minutes, returns 0 with no time",
+    ZS.parseRetryAfterMs("Rate limit reached. You can send your next request in 31 s.") === 31000 &&
+    ZS.parseRetryAfterMs("try again in 2 minutes") === 120000 &&
+    ZS.parseRetryAfterMs("quota exceeded") === 0);
+  check("rate-limit retry nudge asks for continuation, not a restart",
+    /Continue exactly where you stopped/.test(ZS.FEEDBACK.limitRetry) &&
+    /Do NOT restart/.test(ZS.FEEDBACK.limitRetry));
 
   // ── ZSChannel ────────────────────────────────────────────────────────────
   check("channel detects Extension context invalidated", ZSChannel.isContextInvalidated("Extension context invalidated."));
@@ -699,6 +709,16 @@ function check(name, cond, detail) {
   uiCtrl.inputCover(false);
   const unlockedOk = !mockClassSet.has("zs-typing") && !mockClassSet.has("zs-height-locked") && !("--zs-lock-h" in mockStyles);
   check("inputCover locks and unlocks editor height around Agent is working cover", lockedOk && unlockedOk, { lockedOk, unlockedOk, mockStyles });
+
+  let limitExpired = false;
+  const countdownBanner = uiCtrl.banner("limit", "Rate limited", "in 1 s", {
+    countdownMs: 100,
+    onExpire: () => { limitExpired = true; },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const countdownText = (countdownBanner.children[1] && countdownBanner.children[1].textContent) || "";
+  check("limit banner updates countdown live and auto-expires",
+    limitExpired && /Retrying in 0 s/.test(countdownText), countdownText);
 
   const resize = uiListeners.window.resize, onVisible = uiListeners.document.visibilitychange;
   const listenersOk = typeof resize === "function" && typeof onVisible === "function";

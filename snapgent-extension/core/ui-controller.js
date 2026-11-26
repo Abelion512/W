@@ -1965,16 +1965,43 @@ const ZSUiController = (() => {
       setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 300); }, 3500);
     }
 
-    function banner(kind, title, msg) {
+    function banner(kind, title, msg, opts) {
+      const o = opts || {};
+      const countdownMs = Math.max(0, Number(o.countdownMs) || 0);
+      root.querySelectorAll(`.zs-banner.${kind}`).forEach((old) => old.remove());
       const b = document.createElement("div");
       b.className = `zs-banner ${kind}`;
+      const body = domEl("div", { className: "zs-banner-m", text: msg });
+      const closeBtn = domEl("button", { className: "zs-banner-x", text: "Close" });
       b.replaceChildren(
         domEl("div", { className: "zs-banner-t", text: title }),
-        domEl("div", { className: "zs-banner-m", text: msg }),
-        domEl("div", { className: "zs-banner-acts" }, domEl("button", { className: "zs-banner-x", text: "Close" }))
+        body,
+        domEl("div", { className: "zs-banner-acts" }, closeBtn)
       );
-      b.querySelector(".zs-banner-x").addEventListener("click", () => b.remove());
+      let timer = null;
+      const close = () => {
+        clearInterval(timer);
+        b.remove();
+      };
+      closeBtn.addEventListener("click", close);
       root.appendChild(b);
+      if (countdownMs > 0) {
+        const end = Date.now() + countdownMs;
+        const tick = () => {
+          // A banner removed by its caller (or replaced by a newer one) must not
+          // leave this interval running forever.
+          if (!b.isConnected) { clearInterval(timer); return; }
+          const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+          body.textContent = `${msg} Retrying in ${left} s…`;
+          if (left > 0) return;
+          clearInterval(timer);
+          if (typeof o.onExpire === "function") o.onExpire();
+          close();
+        };
+        tick();
+        timer = setInterval(tick, 250);
+      }
+      return b;
     }
 
     // Left-hand snapgentV3 popup showing the latest screen_capture. Fed from the

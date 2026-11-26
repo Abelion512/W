@@ -114,9 +114,20 @@ const LIMIT_RE = /(quota|rate.?limit|rate limited|too many requests|free tier|fr
 const LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
 const limitedUntil = new Map(); // provider -> epoch ms
 
+// A site may state its own cooldown ("in 31 s"). Use it so routing can return
+// to that provider as soon as the site allows, instead of a blanket hour.
+function limitCooldownMs(error) {
+  const text = String(error || "");
+  const seconds = text.match(/\b(\d+)\s*(?:s|sec|secs|second|seconds)\b/i);
+  if (seconds) return Math.min(Math.max(Number(seconds[1]) * 1000, 5000), LIMIT_COOLDOWN_MS);
+  const minutes = text.match(/\b(\d+)\s*(?:m|min|mins|minute|minutes)\b/i);
+  if (minutes) return Math.min(Math.max(Number(minutes[1]) * 60000, 5000), LIMIT_COOLDOWN_MS);
+  return LIMIT_COOLDOWN_MS;
+}
+
 function markProviderLimited(provider, error) {
   if (!provider || !LIMIT_RE.test(String(error || ""))) return false;
-  limitedUntil.set(provider, Date.now() + LIMIT_COOLDOWN_MS);
+  limitedUntil.set(provider, Date.now() + limitCooldownMs(error));
   try {
     const plain = Object.fromEntries(limitedUntil);
     const stored = chrome.storage.local.set({ limitedUntil: plain });

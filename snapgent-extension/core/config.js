@@ -16,6 +16,18 @@ const ZS = (() => {
   // purely so the chip can say "Reminder" instead of inheriting the bootstrap's
   // "Starting Up". Same content, different label: a re-injection is not a start.
   const RESEND_MARKER = "⟦ZS-RE⟧";
+  // Every prompt ends with this so replies read like a person wrote them.
+  const VOICE = "Write short, plain sentences. No canned openers or closers, no extra bullet lists - just the point.";
+  // Limit notices say "in 31 s" / "2 minutes". Used for the live countdown and
+  // for retrying at the time the site asked for instead of a fixed guess.
+  function parseRetryAfterMs(text) {
+    const value = String(text || "");
+    const seconds = value.match(/\b(\d+)\s*(?:s|sec|secs|second|seconds)\b/i);
+    if (seconds) return Math.min(Math.max(Number(seconds[1]) * 1000, 1000), 300000);
+    const minutes = value.match(/\b(\d+)\s*(?:m|min|mins|minute|minutes)\b/i);
+    if (minutes) return Math.min(Math.max(Number(minutes[1]) * 60000, 1000), 300000);
+    return 0;
+  }
 
   // ── Tool → visual category (icon + colour theme for the chips) ─────────
   // Roblox Studio MCP only. Returns one of:
@@ -56,21 +68,21 @@ const ZS = (() => {
           "ERROR: a snapgentV3 command was detected in your reply but its JSON could not be parsed. " +
           'Rewrite it as a single valid JSON object in plain text, exactly like {"command": "name", "params": {...}}' +
           luaMalformed + ". You may add a short note around it. " +
-          "Please retry.",
+          "Try again.",
         unclosed:
           "ERROR: your snapgentV3 command was cut off before it finished - the JSON object" +
           objAlt + " never closed, so it could not run. Rewrite the WHOLE command in one " +
           'piece as valid JSON, exactly like {"command": "name", "params": {...}}' +
-          luaUnclosed + ". Please retry.",
+          luaUnclosed + ". Try again.",
         luaOpener:
           "ERROR: you wrote the closing ###END_LUA### marker but not the opening ###LUA### marker, " +
           "so the Luau block was not detected and did not run. Put ###LUA### immediately BEFORE your " +
-          "code and ###END_LUA### after it. Please retry.",
+          "code and ###END_LUA### after it. Try again.",
         envelope:
           "ERROR: you wrote a command's parameters as a bare JSON object, but without the required " +
           "envelope, so it was not recognised as a command. Wrap them like " +
           '{"command": "name", "params": { ...your parameters... }} - the parameter keys go INSIDE ' +
-          '"params". Please retry.',
+          '"params". Try again.',
         // The model named a REAL tool but under the wrong key - it wrote the call
         // the way a function-calling API would (e.g. {"toolName": "get_studio_state",
         // "studio_id": "..."}) instead of snapgentV3's envelope. Seen live on
@@ -80,7 +92,7 @@ const ZS = (() => {
           "ERROR: you used the wrong key to name the command, so it was not recognised and did not " +
           'run. The key must be exactly "command" - not "toolName", "tool", "name", "function" or ' +
           '"action" - and every argument goes INSIDE "params", like ' +
-          '{"command": "name", "params": { ...your parameters... }}. Please retry.',
+          '{"command": "name", "params": { ...your parameters... }}. Try again.',
         // DeepSeek sometimes falls back to its own native agentic markup. The
         // note must NEVER quote the markers literally: the reply that follows
         // often echoes the wording, and a quoted marker would re-trigger the
@@ -90,7 +102,7 @@ const ZS = (() => {
           "tags). snapgentV3 cannot read that format, so the command did not run. Never use those tags " +
           "here. Write the call as a single plain-text JSON object instead, exactly like " +
           '{"command": "name", "params": { ...your parameters... }} - one command per reply. ' +
-          "Please retry.",
+          "Try again.",
       };
       return notes[reason] || notes.malformed;
     },
@@ -140,6 +152,13 @@ const ZS = (() => {
       "(System note: your previous reply was empty - nothing was shown to the " +
       "user. Answer the user's last request now in plain text, using the tool " +
       "result above. Do NOT call a tool again unless you need a new result.)",
+    // The site showed a rate-limit notice with a stated cooldown and the loop
+    // waited it out. The notice consumed the pending turn, so re-send a short
+    // nudge instead of the original prompt (the loop does not keep it).
+    limitRetry:
+      "(System note: the site was temporarily rate limited and is accepting " +
+      "messages again. Continue exactly where you stopped. Do NOT restart or " +
+      "repeat steps that already completed.)",
   };
 
   const BT = "```";
@@ -215,7 +234,7 @@ RULES:
 - Never say the bridge or Studio is offline without running a command on this turn.
 - Never delete or clear broadly without confirming the exact target with the user.
 - Do only what was asked. Finish with one short plain-text sentence; no code fences in the final answer.`;
-      return `${SYS_MARKER}\n${compactPrompt}` +
+      return `${SYS_MARKER}\n${compactPrompt}\n\n${VOICE}` +
         (providerNotes ? `\n\n${providerNotes.trim()}` : "") +
         (customPrompt ? `\n\nUser's Custom prompt:\n${customPrompt.trim()}` : "");
     }
@@ -243,7 +262,7 @@ Rules:
         ? "\n\nAvailable skills (reusable instructions stored in the workspace). When a task matches a skill's description, first read its SKILL.md with read_file, then follow it. Skills are guidance only: never run a skill's scripts without the user's confirmation.\n" +
           skills.map((s) => `- ${s.name}: ${s.description} (path: ${s.path || ".snapgent/skills/" + s.name + "/SKILL.md"})`).join("\n")
         : "";
-      return `${SYS_MARKER}\n` + prompt + skillsBlock + (antislopRules ? "\n\nWriting rules (always apply to any text you write):\n" + antislopRules : "") + (providerNotes ? "\n\n" + providerNotes : "") +
+      return `${SYS_MARKER}\n${prompt}\n\n${VOICE}` + skillsBlock + (antislopRules ? "\n\nWriting rules (always apply to any text you write):\n" + antislopRules : "") + (providerNotes ? "\n\n" + providerNotes : "") +
         (customPrompt ? `\n\nUser's Custom prompt:\n${customPrompt}` : "");
     }
 
@@ -327,7 +346,7 @@ IMPORTANT: Your very first action is to write \`list_commands\` with no params (
       : "";
 
     // The marker leads the prompt; it tags the bootstrap turn for camouflage.
-    return `${SYS_MARKER}\n${prompt}${siteRules}${extra}`;
+    return `${SYS_MARKER}\n${prompt}\n\n${VOICE}${siteRules}${extra}`;
   }
 
   // ── Curated, TESTED usage notes per command ─────────────────────────────────
@@ -435,6 +454,7 @@ IMPORTANT: Your very first action is to write \`list_commands\` with no params (
     SYS_MARKER,
     RESEND_MARKER,
     FEEDBACK,
+    parseRetryAfterMs,
     toolCategory,
     buildSystemPrompt,
     compactTools,

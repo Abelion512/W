@@ -30,17 +30,12 @@
     });
   }
 
-  // ── Anti-bot mitigation (EXPERIMENTAL) ──────────────────────────────────
-  // Suspected contributor to Arena's captcha: the agentic loop sends turns
-  // back-to-back with near-zero, perfectly regular delay (~200ms settle),
-  // which behavioral risk-scoring (reCAPTCHA/Cloudflare) can read as a bot
-  // signal alongside the necessarily-synthetic input events. This adds a
-  // small randomized human-reaction-time delay before each send.
-  // REVERT: flip HUMANIZE_SEND to false - single toggle, no other changes needed.
-  const HUMANIZE_SEND = false; // didn't prevent Arena's captcha (fires on turn 1 already) - revert
+  // ── Send pacing ──────────────────────────────────────────────────────────
+  // Back-to-back sends land at near-identical intervals, which reads as a loop.
+  // Vary each wait. Longer window on DeepSeek: that account was flagged.
+  // Pacing is comfort, not a captcha or account-flag fix.
   const SEND_JITTER_MS = [400, 1400]; // [min, max] ms, randomized per send
   function jitterBeforeSend() {
-    if (!HUMANIZE_SEND && P.id !== "deepseek") return Promise.resolve();
     const [lo, hi] = P.id === "deepseek" ? [1500, 4000] : SEND_JITTER_MS;
     return sleep(lo + Math.random() * (hi - lo));
   }
@@ -946,6 +941,10 @@
     // Re-send the command list after this many successful tool calls. Kept high
     // so the reminder does not bloat the context too often.
     const REMIND_TOOLS_EVERY = 20;
+    // A site rate limit with a stated cooldown is retryable. Cap it so a stuck
+    // provider cannot keep the loop alive forever.
+    const MAX_LIMIT_RETRIES = 2;
+    let limitRetries = 0;
     ui.showStop(true);
     P.setInputLock(true); // prevent user from typing while the agent is active
     ui.inputCover(true);  // keep the "Agent is working" cover up for the WHOLE loop
@@ -1012,9 +1011,24 @@
         if (A.stop || res.kind === "stopped") break;
 
         if (res.kind === "context_limit") {
-          A.lastLoopError = res.detail || `${P.displayName} reached its context limit.`;
-          ui.banner("limit", `${P.displayName} reached its context limit`,
-            (res.detail || "") + " New chat.");
+          const detail = res.detail || `${P.displayName} reached its context limit.`;
+          const waitMs = ZS.parseRetryAfterMs(detail);
+          if (waitMs && limitRetries < MAX_LIMIT_RETRIES && !A.stop) {
+            limitRetries++;
+            diag("loop.limitRetry", { attempt: limitRetries, waitMs });
+            ui.banner("limit", `${P.displayName} rate limited`, detail, { countdownMs: waitMs });
+            await sleep(waitMs + 500);
+            if (A.stop) break;
+            // The limit notice consumed the pending turn; nudge the model to
+            // resume from the tool result it already has. Do NOT pass `base`
+            // here - that is the assistant count, not prompt text.
+            base = await submitAndGetBase(ZS.FEEDBACK.limitRetry);
+            continue;
+          }
+          // Only a retry that gives up is a loop error (A2A reads this), so it
+          // must not be set before a retry that may succeed.
+          A.lastLoopError = detail;
+          ui.banner("limit", `${P.displayName} reached its context limit`, detail + " New chat.");
           break;
         }
         if (res.kind === "too_long") {
