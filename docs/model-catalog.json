@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-22T20:17:03.750680+00:00",
+  "generatedAt": "2026-11-26T13:35:20.917184+00:00",
   "source": "docs/WEB_AI_CAPABILITIES.md + open-tab titles (no prompts sent)",
   "policy": {
     "defaultTier": "balanced",
@@ -60,7 +60,7 @@
         "vision",
         "web"
       ],
-      "observedTitle": "Repo Server Command Discovery - Google Gemini"
+      "observedTitle": null
     },
     {
       "provider": "glm",
@@ -169,6 +169,9 @@
     }
   ],
   "externalModels": [
+    "upstage/solar-mini-4-5",
+    "upstage/solar-pro-4-contributor",
+    "xiaomi/mimo-v2.6-flash-mopd",
     "thinkingmachines/inkling-2-mini",
     "radixark/daisyrose-27b",
     "mistralai/pixtral-large-2502",
@@ -215,9 +218,6 @@
     "moonshotai/kimi-k3.1-pro:batch",
     "recursive/flint-v1.0:free",
     "minimax/minimax-m3.1-flash",
-    "deepseek/deepseek-v4.1-flash-1017",
-    "deepseek/deepseek-v4.1-flash-1017:batch",
-    "elorian/glimpse",
-    "reflection/beam-1.0-501b-a23b"
+    "deepseek/deepseek-v4.1-flash-1017"
   ]
 }

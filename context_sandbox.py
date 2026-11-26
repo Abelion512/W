@@ -30,6 +30,10 @@ class ContextSandboxError(ValueError):
     """A requested context file is not safe to read."""
 
 
+# Bridge internals must never be handed to a third-party web chat as context.
+_DENIED_TOP_LEVEL = {"config.json", "logs", ".snapgent", "bridge_token", "a2a_token"}
+
+
 def _safe_relpath(raw: Any, root: Path) -> Path:
     if not isinstance(raw, str) or not raw.strip():
         raise ContextSandboxError("empty path")
@@ -38,6 +42,9 @@ def _safe_relpath(raw: Any, root: Path) -> Path:
         raise ContextSandboxError("absolute paths are not allowed")
     if any(part in ("..", "") for part in candidate.parts):
         raise ContextSandboxError("parent segments are not allowed")
+    first = candidate.parts[0]
+    if first in _DENIED_TOP_LEVEL or first.startswith("config.json."):
+        raise ContextSandboxError("bridge internal path is not available as context")
     try:
         resolved = (root / candidate).resolve()
     except (OSError, ValueError) as error:
@@ -46,7 +53,9 @@ def _safe_relpath(raw: Any, root: Path) -> Path:
         raise ContextSandboxError(str(error)) from error
     if resolved != root and root not in resolved.parents:
         raise ContextSandboxError("path escapes the repository root")
-    return candidate
+    # Return the validated absolute path so the caller opens that exact object
+    # instead of resolving the string a second time (TOCTOU via symlink swap).
+    return resolved
 
 
 def _safe_task_id(task_id: str) -> str:
@@ -126,11 +135,11 @@ def prepare(
 
     for raw in islice(files, max_files):
         try:
-            rel = _safe_relpath(raw, root)
-        except ContextSandboxError as error:
+            source = _safe_relpath(raw, root)
+            rel = source.relative_to(root)
+        except (ContextSandboxError, ValueError) as error:
             skipped.append({"path": str(raw), "reason": str(error)})
             continue
-        source = (root / rel).resolve()
         if not source.is_file():
             skipped.append({"path": rel.as_posix(), "reason": "not a file"})
             continue

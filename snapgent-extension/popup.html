@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
   <style>
     /* Borderless, iOS-grouped surface: depth comes from layered fills and a
        single soft highlight, never from outlined boxes. */
@@ -13,7 +14,7 @@
       --surface-3: #2a2a33;
       --text: #f5f5f7;
       --muted: #9a9aa2;
-      --muted-2: #6e6e76;
+      --muted-2: #85858d;
       --hairline: rgba(255, 255, 255, 0.07);
       --accent: #7c8cff;
       --ok: #30d158;
@@ -22,6 +23,44 @@
       --r-lg: 18px;
       --r-md: 13px;
       --r-sm: 10px;
+      --wrap-top: #141418;
+      --accent-glow: rgba(124, 140, 255, 0.10);
+      --accent-soft-bg: rgba(124, 140, 255, 0.16);
+      --accent-soft-bg-hover: rgba(124, 140, 255, 0.22);
+      --accent-soft-text: #c7cdff;
+      --code-bg: rgba(255, 255, 255, 0.06);
+      --highlight: rgba(255, 255, 255, 0.05);
+      --halo-ok: rgba(48, 209, 88, 0.14);
+      --halo-warn: rgba(255, 159, 10, 0.14);
+      --halo-bad: rgba(255, 69, 58, 0.14);
+    }
+
+    /* HIG dark-mode.md: follow the system appearance, never an app switch. */
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f2f3f7;
+        --surface: #ffffff;
+        --surface-2: #e8ebf2;
+        --surface-3: #dce0ea;
+        --text: #14213a;
+        --muted: #475569;
+        --muted-2: #5b6472;
+        --hairline: rgba(15, 23, 42, 0.10);
+        --accent: #1d4ed8;
+        --ok: #047857;
+        --warn: #b45309;
+        --bad: #b91c1c;
+        --wrap-top: #ffffff;
+        --accent-glow: rgba(29, 78, 216, 0.08);
+        --accent-soft-bg: rgba(29, 78, 216, 0.10);
+        --accent-soft-bg-hover: rgba(29, 78, 216, 0.16);
+        --accent-soft-text: #1d4ed8;
+        --code-bg: rgba(15, 23, 42, 0.06);
+        --highlight: rgba(255, 255, 255, 0.7);
+        --halo-ok: rgba(4, 120, 87, 0.14);
+        --halo-warn: rgba(180, 83, 9, 0.14);
+        --halo-bad: rgba(185, 28, 28, 0.14);
+      }
     }
 
     * { box-sizing: border-box; }
@@ -44,8 +83,8 @@
       gap: 14px;
       padding: 16px 16px 18px;
       background:
-        radial-gradient(120% 60% at 50% -10%, rgba(124, 140, 255, 0.10), transparent 70%),
-        linear-gradient(180deg, #141418 0%, var(--bg) 46%);
+        radial-gradient(120% 60% at 50% -10%, var(--accent-glow), transparent 70%),
+        linear-gradient(180deg, var(--wrap-top) 0%, var(--bg) 46%);
     }
 
     /* Header */
@@ -66,7 +105,7 @@
       letter-spacing: -0.3px;
     }
     .ver {
-      font-size: 10.5px;
+      font-size: 11.5px;
       font-weight: 500;
       letter-spacing: 0;
       color: var(--muted-2);
@@ -76,7 +115,7 @@
       background: var(--surface);
       border-radius: var(--r-lg);
       padding: 14px 16px;
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      box-shadow: inset 0 1px 0 var(--highlight);
     }
 
     .status {
@@ -93,9 +132,9 @@
       background: var(--muted-2);
       transition: background 0.2s, box-shadow 0.2s;
     }
-    .dot.ok   { background: var(--ok);   box-shadow: 0 0 0 4px rgba(48, 209, 88, 0.14); }
-    .dot.warn { background: var(--warn); box-shadow: 0 0 0 4px rgba(255, 159, 10, 0.14); }
-    .dot.bad  { background: var(--bad);  box-shadow: 0 0 0 4px rgba(255, 69, 58, 0.14); }
+    .dot.ok   { background: var(--ok);   box-shadow: 0 0 0 4px var(--halo-ok); }
+    .dot.warn { background: var(--warn); box-shadow: 0 0 0 4px var(--halo-warn); }
+    .dot.bad  { background: var(--bad);  box-shadow: 0 0 0 4px var(--halo-bad); }
 
     .status-text { min-width: 0; flex: 1; }
     #state {
@@ -117,7 +156,7 @@
       margin-top: 12px;
       padding-top: 11px;
       border-top: 0.5px solid var(--hairline);
-      font-size: 11.5px;
+      font-size: 12px;
       line-height: 1.7;
       font-variant-numeric: tabular-nums;
       letter-spacing: 0.1px;
@@ -132,7 +171,7 @@
       margin-top: 12px;
       padding-top: 11px;
       border-top: 0.5px solid var(--hairline);
-      font-size: 11.5px;
+      font-size: 12px;
       line-height: 1.6;
       letter-spacing: 0.1px;
       color: var(--muted);
@@ -142,7 +181,7 @@
     #usage:empty { display: none; }
     #usage .u-label {
       margin-right: 5px;
-      font-size: 10px;
+      font-size: 11px;
       font-weight: 600;
       letter-spacing: 0.4px;
       text-transform: uppercase;
@@ -156,7 +195,7 @@
     .pair[hidden] { display: none; }
     .pair label {
       padding: 0 2px;
-      font-size: 11px;
+      font-size: 12px;
       font-weight: 600;
       letter-spacing: 0.3px;
       text-transform: uppercase;
@@ -201,7 +240,7 @@
       letter-spacing: -0.1px;
       color: var(--text);
       background: var(--surface-2);
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      box-shadow: inset 0 1px 0 var(--highlight);
       transition: background 0.15s, transform 0.08s, box-shadow 0.15s;
       -webkit-tap-highlight-color: transparent;
       /* Glyphs (↻ ⟳ ⚙) stay monochrome instead of rendering as colour emoji. */
@@ -213,13 +252,13 @@
       outline: none;
       box-shadow: 0 0 0 3px rgba(124, 140, 255, 0.45);
     }
-    #reconnect { background: rgba(124, 140, 255, 0.16); color: #c7cdff; }
-    #reconnect:hover { background: rgba(124, 140, 255, 0.22); }
+    #reconnect { background: var(--accent-soft-bg); color: var(--accent-soft-text); }
+    #reconnect:hover { background: var(--accent-soft-bg-hover); }
 
     /* Footer */
     .hint {
       margin: 0;
-      font-size: 11px;
+      font-size: 12px;
       line-height: 1.5;
       color: var(--muted-2);
       text-align: center;
@@ -228,9 +267,9 @@
       padding: 1px 6px;
       border-radius: 6px;
       font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      font-size: 10.5px;
+      font-size: 11.5px;
       color: var(--muted);
-      background: rgba(255, 255, 255, 0.06);
+      background: var(--code-bg);
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -267,15 +306,15 @@
     <div class="actions">
       <button id="reconnect" title="Redial the bridge (does not restart it)">↻ Reconnect</button>
       <button id="restart" title="Restart the MCP servers only - the bridge keeps running">⟳ Restart</button>
-      <button id="settings">⚙ Settings</button>
-      <button class="full" id="rotate-token" hidden>🔑 Rotate token</button>
-      <button class="full" id="forget-token" hidden>🗝 Forget saved token</button>
+      <button id="settings">⚙ Settings…</button>
+      <button class="full" id="rotate-token" hidden>Rotate token</button>
+      <button class="full" id="forget-token" hidden>Forget saved token</button>
     </div>
 
     <p class="hint" id="launch-hint">
       Start with <code>start.bat</code>.
     </p>
   </div>
-  <script src="popup.js"></script>
+  <script src="popup.js" defer></script>
 </body>
 </html>

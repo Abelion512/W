@@ -109,6 +109,8 @@ canvas:active { cursor: grabbing; }
   cursor: pointer;
 }
 .note-list button:hover { border-color: var(--accent); }
+.note-list button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.note-list button[aria-pressed="true"] { border-color: var(--accent); background: #1c2536; }
 .note-panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -116,7 +118,7 @@ canvas:active { cursor: grabbing; }
   padding: 18px 20px;
   min-height: 120px;
 }
-.note-panel h3 {
+.note-panel h2 {
   margin: 0 0 10px;
   font-size: 17px;
 }
@@ -152,14 +154,16 @@ canvas:active { cursor: grabbing; }
     </div>
   </header>
 
-  <canvas id="stage"></canvas>
+  <canvas id="stage" role="img" aria-label="Diagram alur kerja snapgent-connector. Geser untuk melihat node, atau baca catatan di bawah diagram."></canvas>
 
   <div class="panel">
     <ul class="note-list">
-      <button data-note="n1">Path utama (happy path)</button><button data-note="n2">Yang salah / masih lemah (temuan di repo ini)</button><button data-note="n3">Opsi perbaikan (pilih sesuai goal)</button>
+      <li><button type="button" data-note="n1" aria-pressed="false">Path utama (happy path)</button></li>
+      <li><button type="button" data-note="n2" aria-pressed="false">Yang salah / masih lemah (temuan di repo ini)</button></li>
+      <li><button type="button" data-note="n3" aria-pressed="false">Opsi perbaikan (pilih sesuai goal)</button></li>
     </ul>
     <div class="note-panel" id="note-body">
-      <h3>Pilih catatan di sebelah kiri</h3>
+      <h2>Pilih catatan di sebelah kiri</h2>
     </div>
   </div>
 
@@ -338,7 +342,10 @@ canvas:active { cursor: grabbing; }
       var id = btn.getAttribute("data-note");
       var note = MODEL.notes.filter(function (n) { return n.id === id; })[0];
       if (!note) return;
-      noteBody.innerHTML = "<h3>" + note.title + "</h3>" + note.body;
+      document.querySelectorAll("button[data-note]").forEach(function (b) {
+        b.setAttribute("aria-pressed", String(b === btn));
+      });
+      noteBody.innerHTML = "<h2>" + note.title + "</h2>" + note.body;
     });
   });
 })();

@@ -50,6 +50,7 @@ PROVIDERS = {
     "meta": ("meta.ai", "https://meta.ai/"),
     "arena": ("arena.ai", "https://arena.ai/chat"),
     "rudder": ("rudder.chat", "https://rudder.chat/"),
+    "ptero": ("ptero.pro", "https://ptero.pro/"),
 }
 
 COLD_SETTLE_S = 10.0

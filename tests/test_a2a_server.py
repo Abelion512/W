@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 import unittest
 import urllib.error
@@ -277,6 +278,43 @@ class A2AServerTests(unittest.TestCase):
         )["result"]
         self.assertIn("progress", task["status"])
         self.assertIn("elapsedSeconds", task["status"]["progress"])
+
+    def test_submit_slot_queues_briefly_then_succeeds_and_fails_on_timeout(self):
+        srv = a2a_server.A2AServer(
+            lambda prompt, timeout, metadata: {"ok": True, "text": f"ok:{prompt}"},
+            port=0,
+            token=self.token,
+            base_url="http://127.0.0.1:0",
+            slot_wait_seconds=0.4,
+        )
+        for _ in range(a2a_server.MAX_CONCURRENT_SUBMITS):
+            srv._submit_slots.acquire()
+        released = False
+
+        def release_one():
+            nonlocal released
+            time.sleep(0.12)
+            released = True
+            srv._submit_slots.release()
+
+        t = threading.Thread(target=release_one, daemon=True)
+        t.start()
+        res = srv._call_submit("queued", metadata={})
+        t.join(timeout=2)
+        self.assertTrue(released)
+        self.assertEqual(res, {"ok": True, "text": "ok:queued"})
+
+        # Exhaust slots longer than slot_wait_seconds -> explicit concurrency rejection
+        srv.slot_wait_seconds = 0.05
+        # The one slot released above was re-acquired and released by _call_submit, so acquire it back:
+        srv._submit_slots.acquire()
+        try:
+            fail_res = srv._call_submit("starved", metadata={})
+            self.assertFalse(fail_res["ok"])
+            self.assertIn("Too many concurrent", fail_res["error"])
+        finally:
+            for _ in range(a2a_server.MAX_CONCURRENT_SUBMITS):
+                srv._submit_slots.release()
 
 
 class TaskStoreTests(unittest.TestCase):

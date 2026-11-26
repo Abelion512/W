@@ -33,6 +33,9 @@ AUTH_DISABLED_VALUES = {"0", "off", "false", "no"}
 # where every client presents the token, extensions included. See
 # token_required_for.
 STRICT_VALUE = "strict"
+# Explicit opt-in to the old copy-paste-free pairing. The Origin header is
+# client-controlled for local processes, so it is not an authentication control.
+AUTO_PAIR_VALUE = "auto-pair"
 
 # None means "stay quiet": the bridge passes its own logger in, tests do not.
 LogFn = Optional[Callable[[str], None]]
@@ -68,18 +71,14 @@ def strict_auth() -> bool:
 def token_required_for(origin: Optional[str]) -> bool:
     """Whether this client has to present the bridge token.
 
-    A browser extension cannot exist without the user installing it, and a
-    web page cannot forge a `chrome-extension://` Origin, so the allowlist
-    above already covers that case - which is what makes pairing
-    copy-paste-free. A native client sends no Origin, so the bridge cannot
-    tell it apart from any other local process and it must prove it holds
-    the token.
-
-    `ZS_BRIDGE_AUTH=strict` requires the token from every client again.
+    A raw local process can set any Origin it likes, so an extension Origin is
+    not proof of identity. Every client needs the token by default. Set
+    `ZS_BRIDGE_AUTH=auto-pair` to accept extension Origins without one on a
+    trusted single-user host; this restores the old convenience mode.
     """
-    if strict_auth():
-        return True
-    return not (origin or "").startswith(ALLOWED_ORIGIN_PREFIXES)
+    if (os.environ.get(AUTH_DISABLE_ENV) or "").strip().lower() == AUTO_PAIR_VALUE:
+        return not (origin or "").startswith(ALLOWED_ORIGIN_PREFIXES)
+    return True
 
 
 def _notify(log_fn: LogFn, message: str) -> None:

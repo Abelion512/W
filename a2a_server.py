@@ -15,14 +15,16 @@ import concurrent.futures
 import copy
 import json
 import secrets
+import sys
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Deque, Dict, Optional
+from typing import Any, Callable, Deque, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 
+import activity_audit
 import bridge_auth
 
 A2A_VERSION = "1.0"
@@ -34,6 +36,9 @@ DEFAULT_TIMEOUT_MS = 1_800_000
 MAX_TIMEOUT_MS = 3_600_000
 MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_TASKS = 200
+# A max-size request must not become hundreds of MB of retained task history.
+MAX_HISTORY_TEXT = 64 * 1024
+MAX_HISTORY_TOTAL = 256 * 1024
 MAX_CONCURRENT_SUBMITS = 8
 MAX_REQUESTS_PER_MINUTE = 120
 RATE_WINDOW_SECONDS = 60.0
@@ -136,6 +141,11 @@ class TaskStore:
                 self._tasks.pop(oldest_finished)
             return True
 
+    def has_context(self, context_id: str) -> bool:
+        """True only for context ids this server issued and still stores."""
+        with self._lock:
+            return any(task.get("contextId") == context_id for task in self._tasks.values())
+
     def get(self, task_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             task = self._tasks.get(task_id)
@@ -187,6 +197,8 @@ class A2AServer:
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
         rate_limit: int = MAX_REQUESTS_PER_MINUTE,
         on_cancel: Optional[Callable[[str], None]] = None,
+        audit_log: Optional[Any] = None,
+        slot_wait_seconds: float = 30.0,
     ) -> None:
         self.submit = submit
         self.host = host
@@ -195,9 +207,13 @@ class A2AServer:
         self.base_url = base_url
         self.timeout_ms = timeout_ms
         self.on_cancel = on_cancel
+        self.slot_wait_seconds = max(0.01, float(slot_wait_seconds))
+        self._audit = audit_log if audit_log is not None else activity_audit.get_audit_log()
         self.store = TaskStore()
         self._cancel_events: Dict[str, threading.Event] = {}
         self._chunk_sinks: Dict[str, Callable[[str], None]] = {}
+        self._task_audit: Dict[str, Dict[str, Any]] = {}
+        self._task_started: Dict[str, float] = {}
         self._cancel_lock = threading.Lock()
         self._task_local = threading.local()
         self._submit_slots = threading.BoundedSemaphore(MAX_CONCURRENT_SUBMITS)
@@ -216,7 +232,11 @@ class A2AServer:
         self.port = self._httpd.server_address[1]
         if not self.base_url or self.base_url.endswith(":0"):
             self.base_url = f"http://{self.host}:{self.port}"
-        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        # Default 0.5s poll makes shutdown() block for half a second on every
+        # bridge stop (and on every test teardown).
+        self._thread = threading.Thread(
+            target=self._httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -275,23 +295,27 @@ class A2AServer:
     def _result(rpc_id: Any, result: Any) -> Dict[str, Any]:
         return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
 
-    def dispatch(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def dispatch(
+        self, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
         rpc_id = payload.get("id")
         method = payload.get("method")
         if payload.get("jsonrpc") != "2.0" or not isinstance(method, str):
             return self.error(rpc_id, -32600, "Invalid Request")
         name = _METHOD_ALIASES.get(method)
         if name == "SendMessage":
-            return self._send_message(payload)
+            return self._send_message(payload, headers=headers)
         if name == "GetTask":
             return self._get_task(payload)
         if name == "CancelTask":
-            return self._cancel_task(payload)
+            return self._cancel_task(payload, headers=headers)
         if name == "Orchestrate":
-            return self._orchestrate(payload)
+            return self._orchestrate(payload, headers=headers)
         return self.error(rpc_id, -32601, "Method not found")
 
-    def _send_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _send_message(
+        self, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
         rpc_id = payload.get("id")
         params = payload.get("params")
         params = params if isinstance(params, dict) else {}
@@ -308,6 +332,20 @@ class A2AServer:
         if not self.store.add(task):
             return self.error(rpc_id, -32000, "Task store is full of live tasks; retry later.")
         self._track_task(task["id"])
+        audit_ctx = self._register_task_audit(
+            task["id"], task["contextId"], headers, params, rpc_id
+        )
+        meta = task.get("metadata") or {}
+        self._audit.record(
+            "a2a.task_submitted",
+            method="SendMessage",
+            prompt_chars=len(text),
+            provider_requested=meta.get("provider"),
+            task_category=meta.get("taskCategory"),
+            model_tier=meta.get("modelTier"),
+            return_immediately=bool(configuration.get("returnImmediately")),
+            **audit_ctx,
+        )
         if configuration.get("returnImmediately"):
             # Snapshot before the worker can flip the task to WORKING/COMPLETED.
             view = self._view(self.store.get(task["id"]), history_length)
@@ -334,7 +372,9 @@ class A2AServer:
             return self.error(rpc_id, -32001, "Task not found")
         return self._result(rpc_id, self._view(task, params.get("historyLength")))
 
-    def _cancel_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _cancel_task(
+        self, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
         rpc_id = payload.get("id")
         params = payload.get("params")
         params = params if isinstance(params, dict) else {}
@@ -345,6 +385,14 @@ class A2AServer:
             code = -32001 if task is None else -32002
             message = "Task not found" if task is None else "Task cannot be canceled in its current state"
             return self.error(rpc_id, code, message)
+        audit_ctx, duration_ms = self._pop_task_audit(task_id)
+        if not audit_ctx:
+            audit_ctx = {
+                **activity_audit.extract_session_context(headers, params, rpc_id=rpc_id),
+                "task_id": task_id,
+                "context_id": canceled.get("contextId"),
+            }
+        self._audit.record("a2a.task_canceled", duration_ms=duration_ms, **audit_ctx)
         with self._cancel_lock:
             event = self._cancel_events.get(task_id)
         if event is not None:
@@ -370,9 +418,46 @@ class A2AServer:
             event = self._cancel_events.get(task_id)
         return bool(event is not None and event.is_set())
 
+    def _register_task_audit(
+        self,
+        task_id: str,
+        context_id: str,
+        headers: Optional[Dict[str, str]],
+        params: Dict[str, Any],
+        rpc_id: Any,
+    ) -> Dict[str, Any]:
+        ctx = {
+            **activity_audit.extract_session_context(headers, params, rpc_id=rpc_id),
+            "task_id": task_id,
+            "context_id": context_id,
+        }
+        with self._cancel_lock:
+            self._task_audit[task_id] = ctx
+            self._task_started[task_id] = time.monotonic()
+            while len(self._task_audit) > MAX_TASKS * 2:
+                oldest = next(iter(self._task_audit))
+                self._task_audit.pop(oldest, None)
+                self._task_started.pop(oldest, None)
+        return ctx
+
+    def _get_task_audit(self, task_id: Optional[str]) -> Dict[str, Any]:
+        if not task_id:
+            return {}
+        with self._cancel_lock:
+            return dict(self._task_audit.get(task_id) or {})
+
+    def _pop_task_audit(self, task_id: str) -> Tuple[Dict[str, Any], Optional[int]]:
+        with self._cancel_lock:
+            ctx = dict(self._task_audit.pop(task_id, None) or {})
+            started = self._task_started.pop(task_id, None)
+        duration_ms = round((time.monotonic() - started) * 1000) if started is not None else None
+        return ctx, duration_ms
+
     # -- orchestration ---------------------------------------------------
 
-    def _orchestrate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _orchestrate(
+        self, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
         """Run one prompt on several pinned providers; first success wins.
 
         This is the high-level ``a2a_orchestrate`` primitive. It relies on the
@@ -403,6 +488,25 @@ class A2AServer:
         if not self.store.add(task):
             return self.error(rpc_id, -32000, "Task store is full of live tasks; retry later.")
         self._track_task(task["id"])
+        audit_ctx = self._register_task_audit(
+            task["id"], task["contextId"], headers, params, rpc_id
+        )
+        meta = task.get("metadata") or {}
+        self._audit.record(
+            "a2a.task_submitted",
+            method="Orchestrate",
+            prompt_chars=len(text),
+            task_category=meta.get("taskCategory"),
+            model_tier=meta.get("modelTier"),
+            return_immediately=bool(configuration.get("returnImmediately")),
+            **audit_ctx,
+        )
+        self._audit.record(
+            "a2a.orchestrate_started",
+            providers=providers,
+            prompt_chars=len(text),
+            **audit_ctx,
+        )
         if configuration.get("returnImmediately"):
             view = self._view(self.store.get(task["id"]), history_length)
             threading.Thread(
@@ -422,8 +526,10 @@ class A2AServer:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         winner: Optional[Dict[str, Any]] = None
+        winner_provider = ""
         errors: list = []
         deadline = MAX_TIMEOUT_MS / 1000.0 + 60
+        audit_ctx = self._get_task_audit(task_id)
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(providers))
         try:
             futures = {
@@ -431,6 +537,8 @@ class A2AServer:
                     self._call_submit,
                     text,
                     {**(metadata or {}), "provider": provider},
+                    None,
+                    audit_ctx,
                 ): provider
                 for provider in providers
             }
@@ -438,6 +546,7 @@ class A2AServer:
                 result = future.result()
                 if result.get("ok") and winner is None:
                     winner = result
+                    winner_provider = futures[future]
                     break
                 if not result.get("ok"):
                     errors.append(str(result.get("error") or "The web AI failed."))
@@ -449,14 +558,33 @@ class A2AServer:
             self._forget_cancel(task_id)
             return
         if winner is not None:
+            self._audit.record(
+                "a2a.orchestrate_finished",
+                ok=True,
+                winner_provider=winner_provider,
+                providers=providers,
+                **audit_ctx,
+            )
             self._complete(task_id, str(winner.get("text") or ""))
         else:
             detail = "; ".join(errors[:3]) or "every provider failed"
+            self._audit.record(
+                "a2a.orchestrate_finished",
+                ok=False,
+                providers=providers,
+                error=activity_audit.sanitize_text(detail),
+                **audit_ctx,
+            )
             self._fail(task_id, f"a2a_orchestrate: {detail}")
 
     # -- streaming -------------------------------------------------------
 
-    def stream(self, handler: "_Handler", payload: Dict[str, Any]) -> None:
+    def stream(
+        self,
+        handler: "_Handler",
+        payload: Dict[str, Any],
+        headers: Optional[Dict[str, str]] = None,
+    ) -> None:
         rpc_id = payload.get("id")
         params = payload.get("params")
         params = params if isinstance(params, dict) else {}
@@ -472,6 +600,20 @@ class A2AServer:
             handler.send_json(self.error(rpc_id, -32000, "Task store is full of live tasks; retry later."))
             return
         self._track_task(task["id"])
+        audit_ctx = self._register_task_audit(
+            task["id"], task["contextId"], headers, params, rpc_id
+        )
+        meta = task.get("metadata") or {}
+        self._audit.record(
+            "a2a.task_submitted",
+            method="SendStreamingMessage",
+            prompt_chars=len(text),
+            provider_requested=meta.get("provider"),
+            task_category=meta.get("taskCategory"),
+            model_tier=meta.get("modelTier"),
+            return_immediately=False,
+            **audit_ctx,
+        )
 
         handler.start_sse()
         handler.send_sse({"task": self._view(task, None)})
@@ -548,10 +690,36 @@ class A2AServer:
 
     # -- task helpers ----------------------------------------------------
 
+    @staticmethod
+    def _bounded_message(message: Any) -> Any:
+        """Keep persisted history bounded independently of the 2 MB body cap."""
+        if not isinstance(message, dict):
+            return message
+        parts = message.get("parts")
+        if not isinstance(parts, list):
+            return message
+        kept: list = []
+        total = 0
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if not isinstance(text, str):
+                continue
+            text = text[:MAX_HISTORY_TEXT]
+            kept.append({**part, "text": text})
+            total += len(text)
+            if total >= MAX_HISTORY_TOTAL:
+                break
+        return {**message, "parts": kept}
+
     def _new_task(self, message: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         context_id = f"ctx-{uuid.uuid4().hex}"
-        if isinstance(message, dict) and isinstance(message.get("contextId"), str):
-            context_id = message["contextId"] or context_id
+        if isinstance(message, dict):
+            requested = message.get("contextId")
+            # Only a context this server issued and still stores may be reused.
+            if isinstance(requested, str) and requested and self.store.has_context(requested):
+                context_id = requested
         metadata = params.get("metadata")
         if not isinstance(metadata, dict):
             metadata = {}
@@ -561,7 +729,7 @@ class A2AServer:
             "submittedAt": _now_iso(),
             "status": {"state": "TASK_STATE_SUBMITTED", "timestamp": _now_iso()},
             "artifacts": [],
-            "history": [message],
+            "history": [self._bounded_message(message)],
             "metadata": metadata,
         }
 
@@ -586,27 +754,43 @@ class A2AServer:
     def current_task_id(self) -> Optional[str]:
         return getattr(self._task_local, "task_id", None)
 
+    def current_audit_context(self) -> Dict[str, Any]:
+        """Return the caller/session audit context bound to the active worker thread."""
+        return dict(getattr(self._task_local, "audit_ctx", None) or {})
+
     def _call_submit(
         self,
         text: str,
         metadata: Optional[Dict[str, Any]] = None,
         task_id: Optional[str] = None,
+        audit_ctx: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         timeout = self.timeout_ms / 1000.0
         requested = (metadata or {}).get("timeoutMs")
         if isinstance(requested, int) and not isinstance(requested, bool):
             if 1_000 <= requested <= MAX_TIMEOUT_MS:
                 timeout = requested / 1000.0
-        if not self._submit_slots.acquire(timeout=5):
+        wait_limit = min(timeout, self.slot_wait_seconds)
+        t_wait = time.monotonic()
+        if not self._submit_slots.acquire(timeout=wait_limit):
             return {"ok": False, "error": "Too many concurrent A2A tasks; retry shortly."}
+        waited = time.monotonic() - t_wait
+        if waited >= 0.05:
+            timeout = max(1.0, timeout - waited)
         prev_task_id = getattr(self._task_local, "task_id", None)
+        prev_audit_ctx = getattr(self._task_local, "audit_ctx", None)
         self._task_local.task_id = task_id
+        self._task_local.audit_ctx = (
+            dict(audit_ctx) if audit_ctx is not None else self._get_task_audit(task_id)
+        )
         try:
             result = self.submit(text, timeout, metadata or {})
-        except Exception as error:  # noqa: BLE001 - report any submit failure
-            return {"ok": False, "error": str(error)}
+        except Exception as error:  # noqa: BLE001 - log details, never echo them
+            sys.stderr.write(f"a2a: submit failed: {error!r}\n")
+            return {"ok": False, "error": "The web AI delegation failed."}
         finally:
             self._task_local.task_id = prev_task_id
+            self._task_local.audit_ctx = prev_audit_ctx
             self._submit_slots.release()
         if not isinstance(result, dict):
             return {"ok": False, "error": "submit returned an invalid result"}
@@ -648,6 +832,13 @@ class A2AServer:
         }
         history = list(task.get("history", [])) + [reply]
         self._forget_cancel(task_id)
+        audit_ctx, duration_ms = self._pop_task_audit(task_id)
+        self._audit.record(
+            "a2a.task_completed",
+            reply_chars=len(text),
+            duration_ms=duration_ms,
+            **(audit_ctx or {"task_id": task_id, "context_id": task.get("contextId")}),
+        )
         return self.store.update(
             task_id,
             status=status,
@@ -661,6 +852,13 @@ class A2AServer:
         status = {"state": "TASK_STATE_FAILED", "timestamp": _now_iso(), "message": reply}
         history = list(task.get("history", [])) + [reply]
         self._forget_cancel(task_id)
+        audit_ctx, duration_ms = self._pop_task_audit(task_id)
+        self._audit.record(
+            "a2a.task_failed",
+            error=activity_audit.sanitize_text(error),
+            duration_ms=duration_ms,
+            **(audit_ctx or {"task_id": task_id, "context_id": task.get("contextId")}),
+        )
         return self.store.update(task_id, status=status, history=history)
 
     @staticmethod
@@ -733,12 +931,19 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- routing ----------------------------------------------------------
 
-    def _guard_http(self, a2a: A2AServer) -> bool:
-        if not a2a.host_ok(self.headers.get("Host")):
-            self.send_json({"error": "forbidden host"}, status=403)
-            return False
+    def _request_headers(self) -> Dict[str, str]:
+        headers = {k: v for k, v in self.headers.items()}
+        headers["_client_ip"] = self.client_address[0] if self.client_address else ""
+        return headers
+
+    def _rate_limit(self, a2a: A2AServer) -> bool:
         client_ip = self.client_address[0] if self.client_address else ""
         if not a2a.allow_request(client_ip):
+            a2a._audit.record(
+                "a2a.rate_limited",
+                path=urlsplit(self.path).path,
+                **activity_audit.extract_session_context(self._request_headers()),
+            )
             self.send_json(
                 {"error": "rate limit exceeded"},
                 status=429,
@@ -747,11 +952,20 @@ class _Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _guard_http(self, a2a: A2AServer, rate_limit: bool = True) -> bool:
+        if not a2a.host_ok(self.headers.get("Host")):
+            self.send_json({"error": "forbidden host"}, status=403)
+            return False
+        if rate_limit and not self._rate_limit(a2a):
+            return False
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
         a2a: A2AServer = self.server.a2a  # type: ignore[attr-defined]
-        if not self._guard_http(a2a):
-            return
         path = urlsplit(self.path).path
+        # Public agent-card reads must not burn the shared client budget.
+        if not self._guard_http(a2a, rate_limit=path not in CARD_PATHS):
+            return
         if path in CARD_PATHS:
             self.send_json(a2a.card())
         else:
@@ -759,17 +973,26 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         a2a: A2AServer = self.server.a2a  # type: ignore[attr-defined]
-        if not self._guard_http(a2a):
+        # Authenticate before consuming quota: an unauthorized peer must not be
+        # able to force 429 for the legitimate bearer-token holder.
+        if not self._guard_http(a2a, rate_limit=False):
             return
         if urlsplit(self.path).path != "/":
             self.send_json({"error": "not found"}, status=404)
             return
         if not a2a.authorized(self.headers.get("Authorization")):
+            a2a._audit.record(
+                "a2a.auth_rejected",
+                path=urlsplit(self.path).path,
+                **activity_audit.extract_session_context(self._request_headers()),
+            )
             self.send_json(
                 {"error": "unauthorized"},
                 status=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
+            return
+        if not self._rate_limit(a2a):
             return
 
         raw = self._read_body()
@@ -789,10 +1012,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_json(a2a.error(None, -32600, "Invalid Request"))
             return
 
+        req_headers = self._request_headers()
         if _METHOD_ALIASES.get(payload["method"]) == "SendStreamingMessage":
-            a2a.stream(self, payload)
+            a2a.stream(self, payload, headers=req_headers)
             return
-        self.send_json(a2a.dispatch(payload))
+        self.send_json(a2a.dispatch(payload, headers=req_headers))
 
     def _read_body(self) -> Optional[bytes]:
         try:

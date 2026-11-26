@@ -257,6 +257,7 @@ snapgent-full/
 ├── docs/                      # Design, security/ops, and code standards
 ├── scripts/                   # One-off tooling
 ├── a2a_server.py              # A2A HTTP facade over bridge.submit_prompt
+├── activity_audit.py          # Structured JSONL activity audit log (logs/activity_audit.jsonl)
 ├── harness_loop.py            # Harness-owned A2A retry loop
 ├── context_sandbox.py         # Per-task context file sandbox
 ├── setup-config.py            # Configures the Linux workspace MCP server
@@ -282,6 +283,7 @@ snapgent-full/
 ├── e2e/                       # Live end-to-end scripts (need a real bridge/browser)
 │   ├── e2e_live.py            # Real bridge + subprocess on an ephemeral port
 │   ├── smoke_extension_live.py  # Handshake/rotation smoke in headless Chrome
+│   ├── ui_theme_e2e.py          # Rendered popup contrast in both OS appearances
 │   └── a2a_matrix_live.py     # Per-provider A2A matrix, cold + warm rounds
 └── sync-upstream.sh           # Sync with upstream, keeping purged paths deleted
 ```
@@ -320,7 +322,9 @@ are in [`docs/code-standards.md`](docs/code-standards.md).
 
 Tests: `/usr/bin/python3 -m pytest -q` (Python), `node
 snapgent-extension/tests/test-*.js` (extension stub-DOM), and
-`/usr/bin/python3 e2e/e2e_live.py` (live bridge + subprocess).
+`/usr/bin/python3 e2e/e2e_live.py` (live bridge + subprocess), and
+`python3 e2e/ui_theme_e2e.py` (popup contrast in emulated light/dark, headless
+Chrome).
 GitHub Actions runs the same suites on every push/PR. The pairing and rotation
 handshake needs a real browser, so it has its own manual smoke:
 `/usr/bin/python3 e2e/smoke_extension_live.py` (headless Chrome, throwaway

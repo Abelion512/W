@@ -81,6 +81,8 @@ jobs:
           node snapgent-extension/tests/test-background.js
           node snapgent-extension/tests/test-core-modules.js
           node snapgent-extension/tests/test-gemini.js
+          node snapgent-extension/tests/test-deepseek.js
+          node snapgent-extension/tests/test-ptero.js
           node snapgent-extension/tests/test-guard.js
 
   e2e:
@@ -100,7 +102,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install e2e deps
-        run: python -m pip install websockets
+        run: python -m pip install -r requirements.txt
 
       # apt-get install consumes the .deb files it uses, so the archive cache is
       # primed with --download-only before the install and re-primed afterwards

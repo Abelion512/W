@@ -32,6 +32,21 @@ const ZSUiController = (() => {
     return node;
   }
 
+  function appendFormattedState(container, msg) {
+    const raw = String(msg == null ? "" : msg);
+    const parts = raw.split(/(<b>[\s\S]*?<\/b>)/g);
+    for (const part of parts) {
+      if (!part) continue;
+      if (part.startsWith("<b>") && part.endsWith("</b>")) {
+        container.appendChild(domEl("strong", { text: part.slice(3, -4) }));
+      } else if (typeof document.createTextNode === "function") {
+        container.appendChild(document.createTextNode(part));
+      } else {
+        container.appendChild(domEl("span", { text: part }));
+      }
+    }
+  }
+
   function svgEl(shapes, attrs = {}) {
     const svg = document.createElementNS(SVG_NS, "svg");
     const base = {
@@ -86,7 +101,18 @@ const ZSUiController = (() => {
 
     let root, bar, stateEl, actionBtn, stopBtn, targetSelect, targetWrap, switchBtn, menuEl, unstableEl;
     let targetBtn, targetMenuEl;
-    let cover, coverRaf, barRaf;
+    let cover, coverRaf, barRaf, coverNow;
+    let themeObs = null, themeTimer = null, destroyed = false;
+    const disposers = [];
+    function track(target, type, fn, opts) {
+      if (!target || typeof target.addEventListener !== "function") return;
+      target.addEventListener(type, fn, opts);
+      disposers.push(() => {
+        if (target && typeof target.removeEventListener === "function") {
+          target.removeEventListener(type, fn, opts);
+        }
+      });
+    }
     let coverLockedH = 0, coverLockedEl = null, anchorLockedBh = 0;
     // placeBar runs every frame. Sampling computed styles and walking ancestors
     // on each frame is measurable work on a busy chat page, so cache the two
@@ -134,8 +160,8 @@ const ZSUiController = (() => {
         domEl("div", { id: "zs-composer-glow", "aria-hidden": "true" }),
         domEl(
           "div",
-          { id: "zs-bar" },
-          domEl("span", { id: "zs-state" }),
+          { id: "zs-bar", role: "toolbar", "aria-label": "Snapgent controls" },
+          domEl("span", { id: "zs-state", role: "status", "aria-live": "polite" }),
           domEl("button", { id: "zs-action" }),
           domEl("button", { id: "zs-stop", hidden: true, text: "■ Stop" }),
           domEl(
@@ -167,6 +193,9 @@ const ZSUiController = (() => {
       if (P.unstableWarning) {
         barNodes.push(domEl("button", { id: "zs-unstable", "aria-label": "Provider may be unstable", hidden: true, text: "⚠ unstable" }));
       }
+      // A re-injected controller must not leave a second bar behind.
+      const staleRoot = document.getElementById("zs-root");
+      if (staleRoot && staleRoot !== root && typeof staleRoot.remove === "function") staleRoot.remove();
       root.replaceChildren(...barNodes);
       document.documentElement.appendChild(root);
       bar = root.querySelector("#zs-bar");
@@ -212,7 +241,7 @@ const ZSUiController = (() => {
           requestAnimationFrame(targetTick);
         }
       });
-      document.addEventListener("click", (e) => {
+      track(document, "click", (e) => {
         if (targetMenuEl.hidden) return;
         if (!targetMenuEl.contains(e.target) && !targetBtn.contains(e.target)) targetMenuEl.hidden = true;
       }, true);
@@ -258,7 +287,7 @@ const ZSUiController = (() => {
       };
       switchBtn.addEventListener("click", (e) => { e.stopPropagation(); if (targetMenuEl) targetMenuEl.hidden = true; toggleMenu(false); });
       openMenuFn = (toSupport) => { if (menuEl.hidden) toggleMenu(toSupport); };
-      document.addEventListener("click", (e) => {
+      track(document, "click", (e) => {
         if (menuEl.hidden) return;
         if (!menuEl.contains(e.target) && !switchBtn.contains(e.target))
           menuEl.hidden = true;
@@ -267,22 +296,37 @@ const ZSUiController = (() => {
       applyTheme();
       // Event-driven theme tracking (replaces 2s setInterval polling).
       if (typeof MutationObserver === "function") {
-        let themeTimer = null;
         const scheduleTheme = () => {
-          if (themeTimer) return;
-          themeTimer = setTimeout(() => { themeTimer = null; applyTheme(); }, 150);
+          if (themeTimer || destroyed) return;
+          themeTimer = setTimeout(() => { themeTimer = null; if (!destroyed) applyTheme(); }, 150);
         };
-        const themeObs = new MutationObserver(scheduleTheme);
+        themeObs = new MutationObserver(scheduleTheme);
         const attrOpts = { attributes: true, attributeFilter: ["class", "style", "data-theme", "data-color-scheme", "data-mode"] };
         try { themeObs.observe(document.documentElement, attrOpts); } catch {}
         if (document.body) { try { themeObs.observe(document.body, attrOpts); } catch {} }
       }
       try {
         const mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
-        if (mq && mq.addEventListener) mq.addEventListener("change", applyTheme);
+        if (mq && mq.addEventListener) {
+          mq.addEventListener("change", applyTheme);
+          disposers.push(() => {
+            if (typeof mq.removeEventListener === "function") mq.removeEventListener("change", applyTheme);
+          });
+        }
       } catch {}
       renderBar();
       placeBar(); // start the per-frame anchoring loop
+      // A background split tab gets no rAF, so a sidebar opening / pane resize
+      // leaves the fixed cover and inline bar at their old coordinates over the
+      // sidebar. These events still fire while hidden; re-place synchronously.
+      const refreshGeometry = () => {
+        placeBarNow();
+        if (cover && cover.dataset.on === "1" && coverNow) coverNow();
+      };
+      track(window, "resize", refreshGeometry);
+      track(document, "visibilitychange", () => {
+        if (!document.hidden) refreshGeometry();
+      });
     }
 
     // The primary button does different things depending on the current state
@@ -1095,7 +1139,8 @@ const ZSUiController = (() => {
       // layout, making the bar fall back to fixed positioning and overlap).
       bar.classList.remove("tone-standby", "tone-active", "tone-warn", "tone-noagent", "tone-starting");
       bar.classList.add(`tone-${toneClass}`);
-      const stateTxt = domEl("span", { className: "zs-state-txt", text: String(msg == null ? "" : msg) });
+      const stateTxt = domEl("span", { className: "zs-state-txt" });
+      appendFormattedState(stateTxt, msg);
       const stateNodes = showSpinner ? [domEl("span", { className: "zs-spin" }), stateTxt] : [stateTxt];
       stateEl.replaceChildren(...stateNodes);
       stateEl.classList.toggle("zs-state-warn", warn);
@@ -1448,8 +1493,7 @@ const ZSUiController = (() => {
       u.style.top = Math.round(Math.max(4, br.top - uh - 5)) + "px";
     }
 
-    function placeBar() {
-      barRaf = requestAnimationFrame(placeBar);
+    function placeBarNow() {
       // Composer halo: a soft ring that follows the site's input box, so the
       // Snapgent band reads as attached to the composer on every provider.
       // Purely decorative and click-through; colour comes from the theme CSS.
@@ -1646,6 +1690,12 @@ const ZSUiController = (() => {
       }
     }
 
+    function placeBar() {
+      if (destroyed) return;
+      placeBarNow();
+      barRaf = requestAnimationFrame(placeBar);
+    }
+
     // Called by the core's sweep + after state changes: refresh the bar content.
     // (Positioning runs continuously in placeBar; this only updates what's shown.)
     function updateStartGate() { renderBar(); }
@@ -1767,12 +1817,12 @@ const ZSUiController = (() => {
       }
       cover.dataset.on = "1"; // intent flag: keep the place() loop alive while set
       cover.style.display = "flex";
-      const place = () => {
+      const placeNow = () => {
         // Loop runs while the cover is INTENDED on (dataset.on), not while it's
         // visible - so we can hide it for an overlay and still restore it after.
         if (!cover || cover.dataset.on !== "1") return;
         const e = P.getEditor();
-        if (!e) { coverRaf = requestAnimationFrame(place); return; }
+        if (!e) return;
         // Re-assert the typing mask on the CURRENT editor node: sites that
         // recreate the editor on each inject/clear (Kimi's Vue) drop the class,
         // which would un-hide the raw text and un-cap its height. Cheap idempotent
@@ -1796,7 +1846,6 @@ const ZSUiController = (() => {
           (P.captchaPresent && P.captchaPresent())
         ) {
           cover.style.display = "none";
-          coverRaf = requestAnimationFrame(place);
           return;
         }
         cover.style.display = "flex";
@@ -1897,8 +1946,13 @@ const ZSUiController = (() => {
         // corner radius so the cover's square corners don't poke past the card's
         // rounded ones. Editor-sized covers keep the CSS default.
         if (P.coverTarget) cover.style.borderRadius = getComputedStyle(covNode).borderRadius;
+      };
+      const place = () => {
+        if (destroyed || !cover || cover.dataset.on !== "1") return;
+        placeNow();
         coverRaf = requestAnimationFrame(place);
       };
+      coverNow = placeNow;
       place();
     }
 
@@ -1911,16 +1965,43 @@ const ZSUiController = (() => {
       setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 300); }, 3500);
     }
 
-    function banner(kind, title, msg) {
+    function banner(kind, title, msg, opts) {
+      const o = opts || {};
+      const countdownMs = Math.max(0, Number(o.countdownMs) || 0);
+      root.querySelectorAll(`.zs-banner.${kind}`).forEach((old) => old.remove());
       const b = document.createElement("div");
       b.className = `zs-banner ${kind}`;
+      const body = domEl("div", { className: "zs-banner-m", text: msg });
+      const closeBtn = domEl("button", { className: "zs-banner-x", text: "Close" });
       b.replaceChildren(
         domEl("div", { className: "zs-banner-t", text: title }),
-        domEl("div", { className: "zs-banner-m", text: msg }),
-        domEl("div", { className: "zs-banner-acts" }, domEl("button", { className: "zs-banner-x", text: "Close" }))
+        body,
+        domEl("div", { className: "zs-banner-acts" }, closeBtn)
       );
-      b.querySelector(".zs-banner-x").addEventListener("click", () => b.remove());
+      let timer = null;
+      const close = () => {
+        clearInterval(timer);
+        b.remove();
+      };
+      closeBtn.addEventListener("click", close);
       root.appendChild(b);
+      if (countdownMs > 0) {
+        const end = Date.now() + countdownMs;
+        const tick = () => {
+          // A banner removed by its caller (or replaced by a newer one) must not
+          // leave this interval running forever.
+          if (!b.isConnected) { clearInterval(timer); return; }
+          const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+          body.textContent = `${msg} Retrying in ${left} s…`;
+          if (left > 0) return;
+          clearInterval(timer);
+          if (typeof o.onExpire === "function") o.onExpire();
+          close();
+        };
+        tick();
+        timer = setInterval(tick, 250);
+      }
+      return b;
     }
 
     // Left-hand snapgentV3 popup showing the latest screen_capture. Fed from the
@@ -1985,10 +2066,26 @@ const ZSUiController = (() => {
       const body = wrap.querySelector(".zs-shot-body");
       if (body) body.style.maxHeight = `${Math.max(120, Math.min(Math.round(vh * 0.42), room))}px`;
     }
-    window.addEventListener("resize", () => { if (shotNode && shotNode.isConnected) placeShot(shotNode); });
+    track(window, "resize", () => { if (shotNode && shotNode.isConnected) placeShot(shotNode); });
 
     build();
-    return { setStatus, setTarget, getTargetName, staleExtensionAlert, setStarted, setStarting, showStop, markStopping, inputCover, toast, banner, showImages, nudgeStart, updateStartGate, refreshSetup, getCustomPrompt, openMenu: (toSupport) => openMenuFn && openMenuFn(toSupport) };
+    function destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      for (const dispose of disposers.slice().reverse()) { try { dispose(); } catch {} }
+      if (themeObs) { try { themeObs.disconnect(); } catch {} themeObs = null; }
+      if (themeTimer) { clearTimeout(themeTimer); themeTimer = null; }
+      if (typeof cancelAnimationFrame === "function") {
+        if (barRaf) cancelAnimationFrame(barRaf);
+        if (coverRaf) cancelAnimationFrame(coverRaf);
+      }
+      barRaf = null;
+      coverRaf = null;
+      if (root && typeof root.remove === "function") root.remove();
+      try { document.documentElement.classList.remove(`zs-site-${P.id}`); } catch {}
+    }
+
+    return { setStatus, setTarget, getTargetName, staleExtensionAlert, setStarted, setStarting, showStop, markStopping, inputCover, toast, banner, showImages, nudgeStart, updateStartGate, refreshSetup, getCustomPrompt, destroy, openMenu: (toSupport) => openMenuFn && openMenuFn(toSupport) };
   }
 
   return { createUiController };

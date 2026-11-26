@@ -17,18 +17,25 @@
   const T = P.timings;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const log = (...a) => console.log("[snapgentV3]", ...a);
+  // One owner for every global observer/listener this IIFE installs, so a
+  // re-injected content script cannot leave a second copy observing the page.
+  const disposers = [];
+  function track(target, type, fn, opts) {
+    if (!target || typeof target.addEventListener !== "function") return;
+    target.addEventListener(type, fn, opts);
+    disposers.push(() => {
+      if (target && typeof target.removeEventListener === "function") {
+        target.removeEventListener(type, fn, opts);
+      }
+    });
+  }
 
-  // ── Anti-bot mitigation (EXPERIMENTAL) ──────────────────────────────────
-  // Suspected contributor to Arena's captcha: the agentic loop sends turns
-  // back-to-back with near-zero, perfectly regular delay (~200ms settle),
-  // which behavioral risk-scoring (reCAPTCHA/Cloudflare) can read as a bot
-  // signal alongside the necessarily-synthetic input events. This adds a
-  // small randomized human-reaction-time delay before each send.
-  // REVERT: flip HUMANIZE_SEND to false - single toggle, no other changes needed.
-  const HUMANIZE_SEND = false; // didn't prevent Arena's captcha (fires on turn 1 already) - revert
+  // ── Send pacing ──────────────────────────────────────────────────────────
+  // Back-to-back sends land at near-identical intervals, which reads as a loop.
+  // Vary each wait. Longer window on DeepSeek: that account was flagged.
+  // Pacing is comfort, not a captcha or account-flag fix.
   const SEND_JITTER_MS = [400, 1400]; // [min, max] ms, randomized per send
   function jitterBeforeSend() {
-    if (!HUMANIZE_SEND && P.id !== "deepseek") return Promise.resolve();
     const [lo, hi] = P.id === "deepseek" ? [1500, 4000] : SEND_JITTER_MS;
     return sleep(lo + Math.random() * (hi - lo));
   }
@@ -60,10 +67,11 @@
   // the user sees the freeze = the smoking gun; correlate its timestamp with the
   // surrounding diag events (esp. code.snapAll / dom.read.slow) to see WHAT ran.
   // Event-driven main-thread stall detector via PerformanceObserver (no setInterval).
+  let perfObserver = null;
   if (typeof PerformanceObserver === "function") {
     try {
       const STALL = 800;
-      const po = new PerformanceObserver((list) => {
+      perfObserver = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
           if (entry.duration > STALL) {
             diag("stall.detected", { ms: Math.round(entry.duration), overBy: Math.round(entry.duration - STALL),
@@ -71,7 +79,7 @@
           }
         }
       });
-      po.observe({ entryTypes: ["longtask"] });
+      perfObserver.observe({ entryTypes: ["longtask"] });
     } catch {}
   }
 
@@ -290,9 +298,10 @@
     state: A,
     sleep,
     diag,
-    startSession: () => startSession(),
+    startSession: (modeOpts) => startSession(modeOpts),
     submitAndGetBase: (text, images) => submitAndGetBase(text, images),
     agentLoop: (base) => agentLoop(base),
+    syncSessionState: () => syncSessionState(),
   });
 
   const {
@@ -920,6 +929,7 @@
     A.stop = false;
     A.stopping = false; // clean slate: never inherit a stale "Stopping…" from a
                         // Stop click that landed before this loop actually started
+    A.lastLoopError = "";
     A.loopKey = null; // pinned by syncSessionState once this chat has an id + content
     let truncCount = 0;
     const MAX_TRUNC = 6;
@@ -931,6 +941,10 @@
     // Re-send the command list after this many successful tool calls. Kept high
     // so the reminder does not bloat the context too often.
     const REMIND_TOOLS_EVERY = 20;
+    // A site rate limit with a stated cooldown is retryable. Cap it so a stuck
+    // provider cannot keep the loop alive forever.
+    const MAX_LIMIT_RETRIES = 2;
+    let limitRetries = 0;
     ui.showStop(true);
     P.setInputLock(true); // prevent user from typing while the agent is active
     ui.inputCover(true);  // keep the "Agent is working" cover up for the WHOLE loop
@@ -997,16 +1011,34 @@
         if (A.stop || res.kind === "stopped") break;
 
         if (res.kind === "context_limit") {
-          ui.banner("limit", `${P.displayName} reached its context limit`,
-            (res.detail || "") + " New chat.");
+          const detail = res.detail || `${P.displayName} reached its context limit.`;
+          const waitMs = ZS.parseRetryAfterMs(detail);
+          if (waitMs && limitRetries < MAX_LIMIT_RETRIES && !A.stop) {
+            limitRetries++;
+            diag("loop.limitRetry", { attempt: limitRetries, waitMs });
+            ui.banner("limit", `${P.displayName} rate limited`, detail, { countdownMs: waitMs });
+            await sleep(waitMs + 500);
+            if (A.stop) break;
+            // The limit notice consumed the pending turn; nudge the model to
+            // resume from the tool result it already has. Do NOT pass `base`
+            // here - that is the assistant count, not prompt text.
+            base = await submitAndGetBase(ZS.FEEDBACK.limitRetry);
+            continue;
+          }
+          // Only a retry that gives up is a loop error (A2A reads this), so it
+          // must not be set before a retry that may succeed.
+          A.lastLoopError = detail;
+          ui.banner("limit", `${P.displayName} reached its context limit`, detail + " New chat.");
           break;
         }
         if (res.kind === "too_long") {
+          A.lastLoopError = "Conversation is too long. Start a new chat.";
           ui.banner("limit", "Conversation too long",
             `Too long. Start a new chat.`);
           break;
         }
         if (res.kind === "timeout") {
+          A.lastLoopError = `No response from ${P.displayName} (timed out).`;
           ui.banner("warn", `No response from ${P.displayName}`,
             `Timed out. Agent stopped.`);
           break;
@@ -1018,6 +1050,7 @@
         // every ~2.5s: no send, no banner, and (on a hidden tab) no watchdog to
         // end it. Stop with the same banner Start shows.
         if (res.kind === "fallback_turn") {
+          A.lastLoopError = FALLBACK_TURN_TEXT;
           diag("fallback_turn.end");
           ui.banner("warn", "Conversation stopped responding", FALLBACK_TURN_TEXT);
           break;
@@ -1419,15 +1452,16 @@
         if (tracker.observe(key, top)) noteScrollUp();
       };
       // capture:true - ChatGPT scrolls inner containers, not just the window.
-      document.addEventListener("scroll", onScroll, { capture: true, passive: true });
+      track(document, "scroll", onScroll, { capture: true, passive: true });
       // WHEEL: only a gesture over the transcript counts. Scrolling up inside the
       // sidebar, a code block or the composer is unrelated to replaying history,
       // and used to hold execution as if the user had scrolled the conversation.
-      window.addEventListener("wheel", (ev) => {
+      const onWheel = (ev) => {
         if (!(ev && ev.deltaY < 0)) return;
         if (!inTranscript(ev.target)) return;
         noteScrollUp();
-      }, { passive: true });
+      };
+      track(window, "wheel", onWheel, { passive: true });
     } catch {}
   }
   installScrollDetector();
@@ -1791,7 +1825,7 @@
   // ════════════════════════════════════════════════════════════════════════
   //  SESSION BOOTSTRAP  ("Starting Up" animated chip, shown in the conversation)
   // ════════════════════════════════════════════════════════════════════════
-  async function startSession() {
+  async function startSession(modeOpts) {
     if (A.running || A.starting) return;
     // "Start session" is allowed ONLY on a blank conversation. Opening an
     // EXISTING conversation must never trigger the bootstrap.
@@ -1801,6 +1835,9 @@
     }
     A.userStopped = false;
     A.lastStartFailure = "";
+    A.failedBoot = false;
+    const bootKey0 = P.conversationKey();
+    if (bootKey0) failedStartKeys.delete(bootKey0);
     A.stop = false;               // clear any halt left by a prior aborted bootstrap
     // Snapshot any turn already on screen at session start (normally none on a
     // clean new chat; on a reload-restored generation it's the stray turn). The
@@ -1855,7 +1892,7 @@
           return;
         }
       }
-      const modeState = await P.ensureComposerReady("startup");
+      const modeState = await P.ensureComposerReady("startup", modeOpts);
       if (!alive()) return;
       if (!modeState.ready) {
         A.lastStartFailure = `${P.displayName} mode not ready`;
@@ -1898,6 +1935,14 @@
         const readyRes = await waitForResponse(base2); // wait for "I'm ready" reply
         if (!alive()) return;
         if (A.stop || readyRes.kind === "stopped") { diag("start.aborted", { kind: readyRes.kind }); return; }
+        if (readyRes.kind === "empty" || readyRes.kind === "timeout" ||
+            readyRes.kind === "context_limit" || readyRes.kind === "too_long" ||
+            readyRes.kind === "fallback_turn") {
+          diag("start.readyFailed", { kind: readyRes.kind, detail: readyRes.detail || "" });
+          A.lastStartFailure = readyRes.detail || `bootstrap acknowledgement failed (${readyRes.kind})`;
+          ui.banner("warn", "Start did not complete", A.lastStartFailure);
+          return;
+        }
       } else if (startRes.kind === "fallback_turn") {
         // 2026-11 ChatGPT: the bootstrap was answered with a placeholder turn that
         // never renders its text. Declaring the session ready here would leave the
@@ -1932,7 +1977,10 @@
         return; // do NOT mark the session ready - "Start" must stay available
       }
       A.started = true;
-      rememberSession(P.conversationKey()); // survives virtualization AND reloads
+      A.failedBoot = false;
+      const bootOkKey = P.conversationKey();
+      if (bootOkKey) failedStartKeys.delete(bootOkKey);
+      rememberSession(bootOkKey); // survives virtualization AND reloads
       ui.setStarted(true);
       ui.toast(`Agent on.`);
     } catch (e) {
@@ -1942,6 +1990,11 @@
       // Only tear down our OWN starting state. If we were superseded (the user
       // opened another chat), the newer flow / syncSessionState owns it now.
       if (alive()) {
+        if (!A.started && A.lastStartFailure) {
+          A.failedBoot = true;
+          const failKey = P.conversationKey();
+          if (failKey) failedStartKeys.add(failKey);
+        }
         A.starting = false;
         A.startingKey = null;
         ui.setStarting(false);
@@ -2620,7 +2673,7 @@
     scrollSuppressed: () => scrollSuppressed(),
     setMcpEnabled: (id, on) => setMcpEnabled(id, on),
     setSkillEnabled: (name, on) => setSkillEnabled(name, on),
-    startSession: () => startSession(),
+    startSession: () => startSession({ preserveMode: true }),
     stopLoop: () => stopLoop(),
     syncSessionState: () => syncSessionState(),
     validateSkillText: (text) => validateSkillText(text),
@@ -2673,7 +2726,7 @@
   // never are - this is what tells them apart (seen live: two false regenResume
   // fired 8s/2s after a Stop with no user action, un-stopping the halted turn).
   let _userClickAt = 0;
-  document.addEventListener("click", (e) => {
+  track(document, "click", (e) => {
     if (e.isTrusted && !(e.target && e.target.closest && e.target.closest("#zs-root"))) {
       _userClickAt = Date.now();
     }
@@ -2886,7 +2939,7 @@
       scheduleSysResend();
     }
   }
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) scheduleLiveTick(0); });
+  track(document, "visibilitychange", () => { if (!document.hidden) scheduleLiveTick(0); });
   onStop(() => scheduleLiveTick(0));
 
   // ════════════════════════════════════════════════════════════════════════
@@ -2907,17 +2960,17 @@
   // (measured live: qwen and rudder both come back on an old thread), so the
   // "open a new chat" click has to be done for the caller instead of failing
   // with "Use an empty chat" and leaving the A2A client to guess why.
-  ZSChannel.listenRuntimeMessages({
+  const stopRuntimeMessages = ZSChannel.listenRuntimeMessages({
     onStatus: (status) => ui.setStatus(status),
     onOpenMenu: (atBottom) => ui.openMenu(atBottom),
-    onA2APrompt: (prompt, promptId) => a2a.runPrompt(prompt, promptId),
+    onA2APrompt: (prompt, promptId, opts) => a2a.runPrompt(prompt, promptId, opts),
     onA2AAbort: (promptId) => a2a.abortIfMatches(promptId, "bridge-cancel"),
   });
 
   // Hydrate the persisted re-statement budget for this conversation up front, so
   // the first tool result after a reload already knows the real tally.
   loadSysCount();
-  ZSChannel.startStatusPolling({
+  const statusPoll = ZSChannel.startStatusPolling({
     send: bg,
     intervalMs: 5000,
     onStatus: (status) => ui.setStatus(status),
@@ -2933,6 +2986,7 @@
   // (P.conversationKey()): once we have seen the marker for a key, we remember
   // it (persisted so it survives reloads). We never flip while busy.
   const startedSessions = new Set();
+  const failedStartKeys = new Set();
   let lastSyncPath = null;
   function rememberSession(path) {
     // A falsy key = a TRANSIENT conversation URL (e.g. Gemini's /app before an
@@ -2957,10 +3011,11 @@
   // telltale artefact: the system-prompt marker, an injected tool-result /
   // system-note turn, or a snapgentV3 command an assistant wrote. Works even
   // after a full cold start and regardless of scroll position.
-  function domHasZsSignal() {
+  function domHasZsSignal(opts) {
+    const requireToolOutput = !!(opts && opts.requireToolOutput);
     for (const it of P.allItems()) {
       const txt = it.textContent || "";
-      if (txt.includes(ZS.SYS_MARKER)) return true;
+      if (!requireToolOutput && txt.includes(ZS.SYS_MARKER)) return true;
       if (/(^|\n)\s*Output of '[^']+':/.test(txt) || txt.includes("(System note:")) return true;
       // Deliberately NO bare command-shape test here. An assistant turn that
       // merely CONTAINS {"command":...} / ###LUA### is NOT proof of a session:
@@ -3022,8 +3077,10 @@
       }
     }
     if (A.starting || A.injecting || A.running) return;
+    if (P.chatIsEmpty()) A.failedBoot = false;
     const path = P.conversationKey();
-    const markerInDom = domHasZsSignal();
+    const failed = A.failedBoot || (!!path && failedStartKeys.has(path));
+    const markerInDom = domHasZsSignal({ requireToolOutput: failed });
     if (markerInDom) rememberSession(path);
     let has;
     if (path && path === lastSyncPath) {
@@ -3105,7 +3162,7 @@
   });
   mo.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
   // When the user returns to the tab, immediately refresh camouflage/state.
-  document.addEventListener("visibilitychange", () => {
+  track(document, "visibilitychange", () => {
     if (!document.hidden) {
       scheduleSweep();
       scheduleAutoResume(250);
@@ -3298,6 +3355,34 @@
         diag("sys.resendFailed", { err: String(e && e.message || e) });
       }
     }, wait);
+  }
+
+  // ── teardown: one owner for unload and re-injection ───────────────────────
+  // A bfcache pagehide (event.persisted) keeps the document alive, so observers
+  // must stay attached there; a real unload/reload detaches everything once.
+  let tornDown = false;
+  let onPageHide = null;
+  let onBeforeUnload = null;
+  function teardown(event) {
+    if (tornDown || (event && event.persisted)) return;
+    tornDown = true;
+    statusPoll.stop();
+    stopRuntimeMessages();
+    for (const dispose of disposers.slice().reverse()) { try { dispose(); } catch {} }
+    try { mo.disconnect(); } catch {}
+    if (perfObserver) { try { perfObserver.disconnect(); } catch {} perfObserver = null; }
+    if (_liveTimer) { clearTimeout(_liveTimer); _liveTimer = null; }
+    if (_resumeTimer) { clearTimeout(_resumeTimer); _resumeTimer = null; }
+    if (_sysResendTimer) { clearTimeout(_sysResendTimer); _sysResendTimer = null; }
+    if (typeof ui.destroy === "function") ui.destroy();
+    if (onPageHide) window.removeEventListener("pagehide", onPageHide);
+    if (onBeforeUnload) window.removeEventListener("beforeunload", onBeforeUnload);
+  }
+  if (typeof window !== "undefined" && window && typeof window.addEventListener === "function") {
+    onPageHide = (event) => teardown(event);
+    onBeforeUnload = () => teardown();
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
   }
 
   log(`snapgentV3 content script ready (provider: ${P.id})`);

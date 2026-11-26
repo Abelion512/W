@@ -1,5 +1,5 @@
 # Test/static-check deps. Inherits the runtime pin (including the Python 3.9
 # marker) so dev installs cannot drift from what the bridge actually runs.
 -r requirements.txt
-pytest>=9.2.0
-pyflakes>=4.1.0
+pytest==9.1.1
+pyflakes==3.4.0

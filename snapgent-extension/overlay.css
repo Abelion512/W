@@ -281,16 +281,16 @@ html.zs-light #zs-bar.zs-prov-gemini {
   --zs-menu-bg: #f0f4f9;
   --zs-content: #1f1f1f;
   --zs-content-muted: #444746;
-  --zs-accent: #1a73e8;
-  --zs-accent-hover: #1557b0;
-  --zs-accent-soft: #1a73e8;
-  --zs-pill-bg: rgba(26, 115, 232, 0.08);
-  --zs-pill-hover-bg: rgba(26, 115, 232, 0.15);
+  --zs-accent: #1d4ed8;
+  --zs-accent-hover: #1e40af;
+  --zs-accent-soft: #1d4ed8;
+  --zs-pill-bg: rgba(29, 78, 216, 0.08);
+  --zs-pill-hover-bg: rgba(29, 78, 216, 0.15);
   --zs-pill-fg: #1f1f1f;
-  --zs-pill-border: rgba(26, 115, 232, 0.36);
+  --zs-pill-border: rgba(29, 78, 216, 0.36);
   --zs-hairline: rgba(68, 71, 70, 0.18);
   --zs-divider: rgba(68, 71, 70, 0.12);
-  --zs-ring-shadow: 0 0 0 1px rgba(26, 115, 232, 0.36), 0 0 10px rgba(26, 115, 232, 0.12);
+  --zs-ring-shadow: 0 0 0 1px rgba(29, 78, 216, 0.36), 0 0 10px rgba(29, 78, 216, 0.12);
 }
 
 /* 2. DeepSeek (chat.deepseek.com) — slate charcoal + royal blue + Inter */
